@@ -54,6 +54,7 @@ export interface JobSnapshot {
   abandonedAt?: number | null;
   cleanupAt?: number | null;
   taskCounts?: { pending: number; leased: number; done: number; failed: number };
+  activePermits?: number;
 }
 export interface FetchResult { response: Response; finalUrl: URL; permitId: string; release: () => Promise<void>; }
 export interface RobotsPolicy { rules: Array<{ allow: boolean; path: string }>; crawlDelayMs: number; }
