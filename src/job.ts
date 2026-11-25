@@ -28,10 +28,8 @@ const MAX_IMAGES_PER_JOB = 50_000;
 const MAX_PERMIT_MS = 15 * 60 * 1000;
 
 export class JobDurableObject extends DurableObject<Env> {
-  private readonly env: Env;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.env = env;
   }
 
   private readState(): StateRow | null {
@@ -268,7 +266,7 @@ export class JobDurableObject extends DurableObject<Env> {
         const current = this.readState();
         if (!current || current.status !== "running") return json({ allowed: false, status: current?.status || "missing" });
         const active = this.ctx.storage.sql.exec("SELECT expires_at FROM permits WHERE permit_id = ?", body.permitId).toArray() as unknown as Array<{ expires_at: number }>;
-        if (!active.length || Number(active[0].expires_at) <= Date.now()) return json({ allowed: false, status: "permit-expired" });
+        if (!active.length || Number(active[0]?.expires_at || 0) <= Date.now()) return json({ allowed: false, status: "permit-expired" });
         const settings = this.getSettings(current);
         if (current.bytes_stored + current.bytes_reserved + amount > settings.budgetBytes) {
           this.ctx.storage.sql.exec("UPDATE state SET status = 'budget-paused' WHERE id = 1");
