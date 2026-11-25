@@ -98,6 +98,58 @@ export class JobDurableObject extends DurableObject<Env> {
     if (existing === null || existing > target) await this.ctx.storage.setAlarm(target);
   }
 
+  private async scheduleNextAlarm(): Promise<void> {
+    const row = this.readState();
+    if (!row) return;
+    const now = Date.now();
+    const targets: number[] = [];
+    if (row.status === "clearing" || row.status === "clearing_failed") {
+      targets.push(now + 30_000);
+    } else if (row.status === "abandoned") {
+      if (row.cleanup_at) targets.push(row.cleanup_at);
+    } else {
+      targets.push(row.last_activity_at + ABANDON_AFTER_MS);
+      const lease = this.ctx.storage.sql.exec("SELECT MIN(lease_until) AS at FROM tasks WHERE state = 'leased'").toArray() as unknown as Array<{ at: number | null }>;
+      if (lease[0]?.at) targets.push(Number(lease[0].at));
+      const claim = this.ctx.storage.sql.exec("SELECT MIN(lease_until) AS at FROM content_claims WHERE state = 'pending' AND lease_until > ?", now).toArray() as unknown as Array<{ at: number | null }>;
+      if (claim[0]?.at) targets.push(Number(claim[0].at));
+      if (row.status === "running") {
+        const pending = this.ctx.storage.sql.exec("SELECT MIN(next_attempt_at) AS at FROM tasks WHERE state = 'pending'").toArray() as unknown as Array<{ at: number | null }>;
+        if (pending[0]?.at) targets.push(Number(pending[0].at));
+      }
+    }
+    if (!targets.length) {
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    await this.ctx.storage.setAlarm(Math.max(now + 1000, Math.min(...targets)));
+  }
+
+  private async sweepTemporaryObjects(jobId: string): Promise<void> {
+    const prefix = "tmp/jobs/" + jobId + "/";
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    let cursor: string | undefined;
+    do {
+      const page = await this.env.IMAGES.list({ prefix, cursor, limit: 500 });
+      for (const object of page.objects) {
+        if (object.uploaded.getTime() > cutoff) continue;
+        const taskId = object.key.slice(prefix.length);
+        const liveTask = this.ctx.storage.sql.exec(
+          "SELECT COUNT(*) AS count FROM tasks WHERE task_id = ? AND state = 'leased' AND lease_until > ?",
+          taskId, Date.now()
+        ).toArray() as unknown as Array<{ count: number }>;
+        const liveClaim = this.ctx.storage.sql.exec(
+          "SELECT COUNT(*) AS count FROM content_claims WHERE temp_key = ? AND state = 'pending' AND lease_until > ?",
+          object.key, Date.now()
+        ).toArray() as unknown as Array<{ count: number }>;
+        if (Number(liveTask[0]?.count || 0) === 0 && Number(liveClaim[0]?.count || 0) === 0) {
+          await this.env.IMAGES.delete(object.key);
+        }
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  }
+
   private taskCounts(): { pending: number; leased: number; done: number; failed: number } {
     const rows = this.ctx.storage.sql.exec("SELECT state, COUNT(*) AS count FROM tasks GROUP BY state").toArray() as unknown as Array<{ state: string; count: number }>;
     const result = { pending: 0, leased: 0, done: 0, failed: 0 };
@@ -261,7 +313,8 @@ export class JobDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ? WHERE state = 'leased' AND lease_until <= ?", now, now);
     const current = this.readState();
     if (!current) return;
-    if (current.status !== "abandoned" && current.status !== "clearing" && now - current.last_activity_at >= ABANDON_AFTER_MS) {
+    await this.sweepTemporaryObjects(current.job_id);
+    if (current.status !== "abandoned" && now - current.last_activity_at >= ABANDON_AFTER_MS) {
       this.ctx.storage.sql.exec("UPDATE state SET status = 'abandoned', abandoned_at = ?, cleanup_at = ? WHERE id = 1", now, now + ABANDON_GRACE_MS);
     }
     const updated = this.readState();
@@ -273,7 +326,7 @@ export class JobDurableObject extends DurableObject<Env> {
       await this.publishPendingTasks();
       await this.updateCompletion();
     }
-    await this.scheduleAlarm(24 * 60 * 60 * 1000);
+    await this.scheduleNextAlarm();
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -326,8 +379,14 @@ export class JobDurableObject extends DurableObject<Env> {
           body.images.length > 2000 || body.pages.length > 2000) return json({ result: "rejected", reason: "INVALID_DISCOVERY_BATCH" }, 400);
         const results: Array<{ taskId: string; kind: string; result: string }> = [];
         let rejected = false;
+        let parentResult = "done";
         await this.scheduleAlarm(60_000);
         this.ctx.storage.transactionSync(() => {
+          const parentRows = this.ctx.storage.sql.exec("SELECT state FROM tasks WHERE task_id = ?", body.taskId).toArray() as unknown as Array<{ state: string }>;
+          const parentState = parentRows[0]?.state;
+          if (!parentState) { parentResult = "not_found"; return; }
+          if (parentState === "done" || parentState === "failed") { parentResult = "already_terminal"; return; }
+          if (parentState !== "leased") { parentResult = "not_leased"; return; }
           for (const item of body.images) {
             const result = this.addTask(item, "image", 0);
             results.push({ taskId: item.taskId, kind: "image", result });
@@ -338,8 +397,12 @@ export class JobDurableObject extends DurableObject<Env> {
             results.push({ taskId: item.taskId, kind: "page", result });
             if (result === "rejected") rejected = true;
           }
-          this.markTask(body.taskId, rejected ? "failed" : "done", rejected ? "DISCOVERY_LIMIT_REACHED" : undefined);
+          parentResult = this.markTask(body.taskId, rejected ? "failed" : "done", rejected ? "DISCOVERY_LIMIT_REACHED" : undefined);
         });
+        if (parentResult === "not_found" || parentResult === "not_leased") {
+          return json({ result: "rejected", reason: parentResult === "not_found" ? "PARENT_TASK_NOT_FOUND" : "PARENT_TASK_NOT_LEASED" }, 409);
+        }
+        if (parentResult === "already_terminal") return json({ result: "already_terminal", parent: "done", items: [] });
         await this.publishPendingTasks();
         await this.updateCompletion();
         return json({ result: rejected ? "rejected" : "accepted", items: results, parent: rejected ? "failed" : "done" });
@@ -549,11 +612,14 @@ export class JobDurableObject extends DurableObject<Env> {
         if (!HASH_PATTERN.test(body.digest)) return json({ error: "INVALID_MANIFEST_DIGEST" }, 400);
         const current = this.readState();
         if (!current || !["completed", "cancelled", "paused", "budget-paused", "verified"].includes(current.status) ||
-          current.pending_pages !== 0 || current.pending_images !== 0 || current.bytes_reserved !== 0) return json({ error: "JOB_NOT_READY_FOR_EXPORT" }, 409);
+          current.bytes_reserved !== 0) return json({ error: "JOB_NOT_READY_FOR_EXPORT" }, 409);
         await this.cleanExpiredPermits();
         const activeRows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM permits WHERE expires_at > ?", Date.now()).toArray() as unknown as Array<{ count: number }>;
         const tasks = this.taskCounts();
-        if (Number(activeRows[0]?.count || 0) !== 0 || tasks.leased !== 0 || tasks.pending !== 0) return json({ error: "ACTIVE_WORKERS_REMAIN" }, 409);
+        if (Number(activeRows[0]?.count || 0) !== 0 || tasks.leased !== 0 ||
+          ((current.status === "completed" || current.status === "cancelled") && tasks.pending !== 0)) {
+          return json({ error: "ACTIVE_WORKERS_REMAIN" }, 409);
+        }
         this.ctx.storage.sql.exec("UPDATE state SET manifest_digest = ?, manifest_count = ?, manifest_bytes = ?, verified = 0 WHERE id = 1",
           body.digest, Math.max(0, Math.floor(body.count)), Math.max(0, Math.floor(body.bytes)));
         return json({ result: "accepted" });
@@ -574,6 +640,11 @@ export class JobDurableObject extends DurableObject<Env> {
         const current = this.readState();
         if (!current || !["completed", "cancelled", "verified", "abandoned", "clearing", "clearing_failed"].includes(current.status)) return json({ error: "JOB_NOT_CLEARABLE" }, 409);
         if (current.status !== "abandoned" && current.verified !== 1) return json({ error: "VERIFIED_EXPORT_REQUIRED" }, 409);
+        const tasks = this.taskCounts();
+        if (current.status !== "abandoned" && (tasks.pending !== 0 || tasks.leased !== 0 ||
+          current.pending_pages !== 0 || current.pending_images !== 0 || current.bytes_reserved !== 0)) {
+          return json({ error: "JOB_WORK_NOT_DRAINED" }, 409);
+        }
         await this.cleanExpiredPermits();
         const activeRows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM permits WHERE expires_at > ?", Date.now()).toArray() as unknown as Array<{ count: number }>;
         if (Number(activeRows[0]?.count || 0) !== 0) return json({ error: "ACTIVE_WORKERS_REMAIN" }, 409);
