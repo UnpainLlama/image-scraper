@@ -24,6 +24,7 @@ rclone copy "$REMOTE" "$DEST_DIR" \
   --s3-secret-access-key "$R2_SECRET_ACCESS_KEY" \
   --s3-no-check-bucket \
   --fast-list \
+  --exclude ".tmp/**" \
   --transfers 8 \
   --checkers 16
 
