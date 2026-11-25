@@ -152,7 +152,7 @@ async function getRobotsPolicy(url: URL): Promise<RobotsPolicy> {
 }
 
 function escapeBrowserPattern(value: string): string {
-  return value.split("").map(character => "\\.^$*+?()[]{}|".includes(character) ? "\\" + character : character).join("");
+  return value.split("").map(character => "\\/.^$*+?()[]{}|".includes(character) ? "\\" + character : character).join("");
 }
 
 export function browserRequestPatterns(allowedOrigin: string): { allowRequestPattern: string[]; rejectRequestPattern: string[] } {
