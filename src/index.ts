@@ -524,9 +524,14 @@ export default {
     return env.ASSETS.fetch(request);
   },
 
-  async queue(batch: MessageBatch<QueuePayload>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     for (const message of batch.messages) {
-      await processQueueMessage(message, env);
+      const body = message.body;
+      if (!body || typeof body !== "object" || !("jobId" in body) || !("taskId" in body)) {
+        message.ack();
+        continue;
+      }
+      await processQueueMessage({ ...message, body: body as QueuePayload }, env);
     }
   }
 } satisfies ExportedHandler<Env>;
