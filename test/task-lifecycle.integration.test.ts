@@ -183,12 +183,14 @@ describe("Durable Object task and storage lifecycle", () => {
     });
     await bindings.IMAGES.put("tmp/jobs/" + jobId + "/" + hash("9"), new Uint8Array([8, 9]));
 
-    expect((await request(stub, "/storage/reconcile/start", {})).ok).toBe(true);
+    const token = crypto.randomUUID();
+    expect((await request(stub, "/storage/reconcile/start", { token })).ok).toBe(true);
     const batch = await request(stub, "/storage/reconcile/batch", {
+      token,
       items: [{ sha256: sha, key: finalKey, size: 4 }]
     });
     expect((await batch.json() as { result: string }).result).toBe("accepted");
-    const finish = await request(stub, "/storage/reconcile/finish", {});
+    const finish = await request(stub, "/storage/reconcile/finish", { token });
     expect(await finish.json()).toMatchObject({ result: "reconciled", objects: 1, bytes: 4 });
 
     const digest = hash("8");
