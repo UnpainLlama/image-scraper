@@ -11,65 +11,62 @@
     "run_worker_first": true,
     "not_found_handling": "single-page-application"
   },
-  "browser": {
-    "binding": "BROWSER"
-  },
+  "browser": { "binding": "BROWSER" },
   "r2_buckets": [
-    {
-      "binding": "IMAGES",
-      "bucket_name": "image-scraper-archive"
-    }
+    { "binding": "IMAGES", "bucket_name": "image-scraper-archive" }
   ],
   "durable_objects": {
     "bindings": [
-      {
-        "name": "JOBS",
-        "class_name": "JobDurableObject"
-      }
+      { "name": "JOBS", "class_name": "JobDurableObject" }
     ]
   },
   "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["JobDurableObject"]
-    }
+    { "tag": "v1", "new_sqlite_classes": ["JobDurableObject"] }
   ],
   "queues": {
     "producers": [
-      {
-        "binding": "DISCOVERY_QUEUE",
-        "queue": "image-scraper-discovery"
-      },
-      {
-        "binding": "DOWNLOAD_QUEUE",
-        "queue": "image-scraper-download"
-      }
+      { "binding": "DISCOVERY_QUEUE", "queue": "image-scraper-discovery" },
+      { "binding": "DOWNLOAD_QUEUE", "queue": "image-scraper-download" }
     ],
     "consumers": [
-      {
-        "queue": "image-scraper-discovery",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 100,
-        "max_concurrency": 50
-      },
-      {
-        "queue": "image-scraper-download",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 100,
-        "max_concurrency": 50
-      }
+      { "queue": "image-scraper-discovery", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 50 },
+      { "queue": "image-scraper-download", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 50 }
     ]
+  },
+  "env": {
+    "staging": {
+      "name": "image-scraper-staging",
+      "workers_dev": true,
+      "assets": {
+        "directory": "./dashboard",
+        "binding": "ASSETS",
+        "run_worker_first": true,
+        "not_found_handling": "single-page-application"
+      },
+      "browser": { "binding": "BROWSER" },
+      "r2_buckets": [
+        { "binding": "IMAGES", "bucket_name": "image-scraper-staging" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "JOBS", "class_name": "JobDurableObject" }
+        ]
+      },
+      "queues": {
+        "producers": [
+          { "binding": "DISCOVERY_QUEUE", "queue": "image-scraper-staging-discovery" },
+          { "binding": "DOWNLOAD_QUEUE", "queue": "image-scraper-staging-download" }
+        ],
+        "consumers": [
+          { "queue": "image-scraper-staging-discovery", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 10 },
+          { "queue": "image-scraper-staging-download", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 10 }
+        ]
+      }
+    }
   },
   "observability": {
     "enabled": false,
-    "logs": {
-      "enabled": false,
-      "invocation_logs": false
-    },
-    "traces": {
-      "enabled": false
-    }
+    "logs": { "enabled": false, "invocation_logs": false },
+    "traces": { "enabled": false }
   }
 }
