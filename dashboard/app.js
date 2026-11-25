@@ -198,10 +198,11 @@
       const queueDrained = snapshot.pendingPages === 0 && snapshot.pendingImages === 0 &&
         (snapshot.taskCounts?.pending || 0) === 0 && (snapshot.taskCounts?.leased || 0) === 0 &&
         Number(snapshot.activePermits || 0) === 0 && snapshot.bytesReserved === 0;
-      const settledSnapshot = snapshot.status === "verified" &&
-        Number(snapshot.activePermits || 0) === 0 && (snapshot.taskCounts?.leased || 0) === 0 &&
-        snapshot.bytesReserved === 0;
-      if (snapshot.status === "abandoned" || settledSnapshot ||
+      const noActiveWorkers = Number(snapshot.activePermits || 0) === 0 &&
+        (snapshot.taskCounts?.leased || 0) === 0;
+      const settledSnapshot = snapshot.status === "verified" && noActiveWorkers && snapshot.bytesReserved === 0;
+      const abandonedSettled = snapshot.status === "abandoned" && noActiveWorkers;
+      if (abandonedSettled || settledSnapshot ||
         (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
