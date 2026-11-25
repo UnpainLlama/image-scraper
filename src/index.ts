@@ -143,12 +143,12 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
     if (rendered) html = rendered;
   }
 
-  const discovered = discoverFromHtml(html, fetched.finalUrl.toString());
+  const discovered = discoverFromHtml(html, fetched.finalUrl.toString(), settings.maxImagesPerPage || 2000, 2000);
   const allImages = [...discovered.images];
   for (const stylesheetUrl of discovered.stylesheets.slice(0, 20)) {
     const css = await fetchStylesheet(env, jobId, stylesheetUrl);
     if (!css) continue;
-    for (const imageUrl of discoverFromCss(css, stylesheetUrl)) allImages.push({ url: imageUrl });
+    for (const imageUrl of discoverFromCss(css, stylesheetUrl, settings.maxImagesPerPage || 2000)) allImages.push({ url: imageUrl });
   }
 
   const uniqueImages = Array.from(new Set(allImages.map(item => item.url))).slice(0, settings.maxImagesPerPage || 2000);
