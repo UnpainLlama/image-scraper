@@ -1,6 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  let activeJobId = "";
+  let activeJobId = sessionStorage.getItem("image-scraper-active-job") || "";
   let currentSnapshot = null;
   let refreshTimer = null;
 
@@ -76,7 +76,8 @@
     try {
       const snapshot = await api("/api/jobs/" + encodeURIComponent(activeJobId), { method: "GET", headers: {} });
       render(snapshot);
-      if (snapshot.status === "completed" || snapshot.status === "cancelled") {
+      const queueDrained = snapshot.pendingPages === 0 && snapshot.pendingImages === 0 && snapshot.bytesReserved === 0;
+      if (snapshot.status === "completed" || (snapshot.status === "cancelled" && queueDrained)) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
       } else {
@@ -123,6 +124,7 @@
         })
       });
       activeJobId = result.jobId;
+      sessionStorage.setItem("image-scraper-active-job", activeJobId);
       $("job-id").textContent = "Job " + activeJobId;
       $("job-panel").hidden = false;
       $("new-job-panel").hidden = true;
@@ -204,9 +206,22 @@
       $("cancel-button").disabled = true;
       currentSnapshot = null;
       activeJobId = "";
+      sessionStorage.removeItem("image-scraper-active-job");
+      $("job-panel").hidden = true;
+      $("new-job-panel").hidden = false;
+      $("job-form").reset();
+      $("concurrency-value").textContent = "5";
+      $("depth-field").hidden = true;
     } catch (error) {
       notice(error.message || "CLEAR_FAILED", "error");
       if (currentSnapshot) setButtonState(currentSnapshot);
     }
   });
+
+  if (activeJobId) {
+    $("job-id").textContent = "Job " + activeJobId;
+    $("job-panel").hidden = false;
+    $("new-job-panel").hidden = true;
+    refresh();
+  }
 })();
