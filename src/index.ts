@@ -248,6 +248,7 @@ async function processImage(jobId: string, taskId: string, payload: StoredTaskPa
   const permitId = fetched.permitId;
   const temporaryKey = "tmp/jobs/" + jobId + "/" + taskId;
   let claimOwned = false;
+  let claimedHash: string | null = null;
 
   try {
     if (fetched.response.status === 429 || fetched.response.status >= 500) {
@@ -283,6 +284,7 @@ async function processImage(jobId: string, taskId: string, payload: StoredTaskPa
     }
     if (claim.result !== "claimed" && claim.result !== "takeover") throw new ScrapeError("UNKNOWN_CONTENT_CLAIM", true, 3);
     claimOwned = true;
+    claimedHash = streamResult.sha256;
 
     const current = await env.IMAGES.head(finalKey);
     if (!current || current.size !== streamResult.size) {
@@ -303,7 +305,9 @@ async function processImage(jobId: string, taskId: string, payload: StoredTaskPa
     if (commitResult.result !== "stored") throw new ScrapeError("CONTENT_COMMIT_UNCONFIRMED", true, 3);
     claimOwned = false;
   } finally {
-    if (claimOwned) await jobRequest(env, jobId, "/content/release", { taskId }).catch(() => undefined);
+    if (claimOwned && claimedHash) {
+      await jobRequest(env, jobId, "/content/release", { sha256: claimedHash, taskId }).catch(() => undefined);
+    }
     await fetched.release();
   }
 }
