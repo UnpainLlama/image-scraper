@@ -319,6 +319,10 @@ async function processQueueMessage(message: { body: QueuePayload; attempts: numb
     return;
   }
   const leaseResponse = await jobRequest(env, hint.jobId, "/task/lease", { taskId: hint.taskId });
+  if (leaseResponse.status === 404) {
+    message.ack();
+    return;
+  }
   const leased = await checkTaskResponse(leaseResponse, ["leased", "paused", "busy", "deferred", "terminal"]);
   if (leased.result !== "leased") { message.ack(); return; }
   const kind = leased.kind;
