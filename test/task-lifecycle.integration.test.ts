@@ -181,6 +181,7 @@ describe("Durable Object task and storage lifecycle", () => {
       customMetadata: { sha256: sha },
       httpMetadata: { contentType: "image/png" }
     });
+    await bindings.IMAGES.put("tmp/jobs/" + jobId + "/" + hash("9"), new Uint8Array([8, 9]));
 
     expect((await request(stub, "/storage/reconcile/start", {})).ok).toBe(true);
     const batch = await request(stub, "/storage/reconcile/batch", {
@@ -206,6 +207,8 @@ describe("Durable Object task and storage lifecycle", () => {
     expect((await cleared.json() as { r2PrefixVerifiedEmpty: boolean }).r2PrefixVerifiedEmpty).toBe(true);
     const objects = await bindings.IMAGES.list({ prefix: "jobs/" + jobId + "/" });
     expect(objects.objects).toHaveLength(0);
+    const temporary = await bindings.IMAGES.list({ prefix: "tmp/jobs/" + jobId + "/" });
+    expect(temporary.objects).toHaveLength(0);
     expect((await request(stub, "/snapshot")).status).toBe(404);
   });
 });
