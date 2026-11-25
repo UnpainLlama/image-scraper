@@ -1,5 +1,5 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
-import { verifyAccess } from "./access";
+import { handleAuthRoute, isAuthenticated } from "./auth";
 import { discoverFromHtml, discoverFromCss } from "./discovery";
 import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, validatePublicUrl } from "./security";
 import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
@@ -464,10 +464,23 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const denied = await verifyAccess(request, env);
-    if (denied) return denied;
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/auth/")) {
+      try {
+        const response = await handleAuthRoute(request, env, url.pathname);
+        if (response) return response;
+      } catch (error) {
+        const code = safeErrorCode(error);
+        const status = error instanceof ScrapeError && ["INVALID_JSON", "REQUEST_TOO_LARGE"].includes(code) ? 400 : 503;
+        return json({ error: code }, status);
+      }
+    }
     if (url.pathname.startsWith("/api/")) {
+      if (!await isAuthenticated(request, env)) return json({ error: "AUTH_REQUIRED" }, 401);
+      const origin = request.headers.get("origin");
+      if (request.method !== "GET" && origin && origin !== url.origin) {
+        return json({ error: "CROSS_ORIGIN_REQUEST" }, 403);
+      }
       try { return await routeApi(request, env); }
       catch (error) {
         const code = safeErrorCode(error);
