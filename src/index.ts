@@ -4,6 +4,7 @@ import { discoverFromHtml, discoverFromCss } from "./discovery";
 import { fetchForJob, validatePublicUrl } from "./security";
 import { imageObjectKey, putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
 import type { Env, JobMode, JobSettings, JobSnapshot, DiscoveryMessage, DownloadMessage, QueuePayload } from "./types";
+export { JobDurableObject } from "./job";
 
 const DEFAULT_BUDGET = 8 * 1024 * 1024 * 1024;
 const DEFAULT_MAX_FILE = 50 * 1024 * 1024;
@@ -64,23 +65,28 @@ async function registerPage(env: Env, jobId: string, pageUrl: string, depth: num
   }
 }
 
-async function registerImages(env: Env, jobId: string, candidates: Array<{ url: string; source: string }>): Promise<void> {
-  const unique = new Map<string, { url: string; source: string }>();
+async function registerImages(env: Env, jobId: string, candidates: Array<{ url: string }>): Promise<void> {
+  const unique = new Map<string, { url: string }>();
   for (const candidate of candidates) {
     if (!unique.has(candidate.url)) unique.set(candidate.url, candidate);
   }
   const items = Array.from(unique.values());
   for (let start = 0; start < items.length; start += 50) {
     const batch = items.slice(start, start + 50);
-    const messages: DownloadMessage[] = [];
-    for (const candidate of batch) {
-      const urlHash = await sha256Text(candidate.url);
-      const taskId = await sha256Text("image|" + candidate.url);
-      const response = await jobRequest(env, jobId, "/enqueue-image", { urlHash, taskId });
-      if (!response.ok) throw new ScrapeError("JOB_STATE_UNAVAILABLE", true, 3);
-      const data = await response.json() as { accepted: boolean };
-      if (data.accepted) messages.push({ jobId, imageUrl: candidate.url, sourcePage: candidate.source, taskId });
-    }
+    const registrations = await Promise.all(batch.map(async candidate => ({
+      url: candidate.url,
+      urlHash: await sha256Text(candidate.url),
+      taskId: await sha256Text("image|" + candidate.url)
+    })));
+    const response = await jobRequest(env, jobId, "/enqueue-images", {
+      items: registrations.map(({ urlHash, taskId }) => ({ urlHash, taskId }))
+    });
+    if (!response.ok) throw new ScrapeError("JOB_STATE_UNAVAILABLE", true, 3);
+    const result = await response.json() as { acceptedTaskIds: string[] };
+    const accepted = new Set(result.acceptedTaskIds);
+    const messages: DownloadMessage[] = registrations
+      .filter(item => accepted.has(item.taskId))
+      .map(item => ({ jobId, imageUrl: item.url, taskId: item.taskId }));
     if (!messages.length) continue;
     try {
       await env.DOWNLOAD_QUEUE.sendBatch(messages.map(body => ({ body })));
@@ -203,7 +209,7 @@ async function processPage(message: DiscoveryMessage, env: Env): Promise<void> {
     const css = await fetchStylesheet(env, message.jobId, stylesheetUrl);
     if (!css) continue;
     for (const imageUrl of discoverFromCss(css, stylesheetUrl)) {
-      allImages.push({ url: imageUrl, source: fetched.finalUrl.toString() });
+      allImages.push({ url: imageUrl });
     }
   }
   await registerImages(env, message.jobId, allImages);
