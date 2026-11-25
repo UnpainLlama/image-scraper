@@ -68,7 +68,7 @@ export function parseRobots(text: string): RobotsPolicy {
   let hasDirectives = false;
 
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.split("#", 1)[0].trim();
+    const line = (rawLine.split("#", 1)[0] || "").trim();
     if (!line) continue;
     const separator = line.indexOf(":");
     if (separator < 0) continue;
