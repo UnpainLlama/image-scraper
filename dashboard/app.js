@@ -1,6 +1,6 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  let activeJobId = sessionStorage.getItem("image-scraper-active-job") || "";
+  let activeJobId = localStorage.getItem("image-scraper-active-job") || "";
   let currentSnapshot = null;
   let refreshTimer = null;
 
@@ -31,14 +31,31 @@
   }
 
   function setButtonState(snapshot) {
-    const finished = snapshot.status === "completed" || snapshot.status === "cancelled";
+    const tasks = snapshot.taskCounts || { pending: snapshot.pendingPages + snapshot.pendingImages, leased: 0 };
+    const partialExportState = ["paused", "budget-paused", "verified"].includes(snapshot.status);
+    const settled = tasks.leased === 0 && snapshot.bytesReserved === 0;
+    const allDone = tasks.pending === 0 && snapshot.pendingPages === 0 && snapshot.pendingImages === 0;
+    const canExport = ["completed", "cancelled"].includes(snapshot.status) ? settled && allDone : partialExportState && settled;
     $("pause-button").hidden = snapshot.status !== "running";
-    $("resume-button").hidden = snapshot.status !== "paused";
-    $("cancel-button").disabled = finished || snapshot.status === "clearing";
-    $("manifest-button").disabled = !finished || snapshot.pendingPages > 0 || snapshot.pendingImages > 0 || snapshot.bytesReserved > 0;
-    $("verify-button").disabled = !$("verification-file").files.length || !finished;
-    $("clear-button").disabled = !snapshot.verified || !finished;
-    $("verification-state").textContent = snapshot.verified ? "Local verification passed. Clear is enabled." : "Verification has not passed.";
+    $("resume-button").hidden = !["paused", "budget-paused", "verified"].includes(snapshot.status);
+    $("cancel-button").disabled = ["completed", "cancelled", "clearing", "clearing_failed", "abandoned"].includes(snapshot.status);
+    $("manifest-button").disabled = !canExport;
+    $("verify-button").disabled = !$("verification-file").files.length || !canExport;
+    $("clear-button").disabled = !(snapshot.status === "abandoned" || (snapshot.verified && allDone && tasks.leased === 0));
+    $("verification-state").textContent = snapshot.verified
+      ? "Attested by local export script. Clear is enabled when all queued work is drained."
+      : "Not attested by the local export script.";
+    const countdown = $("retention-countdown");
+    if (snapshot.cleanupAt) {
+      const remaining = Math.max(0, snapshot.cleanupAt - Date.now());
+      const days = Math.floor(remaining / 86400000);
+      const hours = Math.floor((remaining % 86400000) / 3600000);
+      countdown.hidden = false;
+      countdown.textContent = "Automatic deletion in " + days + " days, " + hours + " hours if this abandoned job is not resumed or cleared.";
+    } else {
+      countdown.hidden = true;
+      countdown.textContent = "";
+    }
   }
 
   function render(snapshot) {
@@ -92,11 +109,48 @@
   async function action(name) {
     if (!activeJobId) return;
     try {
-      await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/" + name, { method: "POST", body: "{}" });
-      notice(name === "cancel" ? "Stop requested. Queued tasks are being drained." : "Job updated.", "success");
+      let body = {};
+      if (name === "resume" && currentSnapshot &&
+        ["budget-paused", "verified"].includes(currentSnapshot.status) &&
+        currentSnapshot.bytesStored >= currentSnapshot.budgetBytes * 0.95) {
+        const suggested = (currentSnapshot.budgetBytes / (1024 ** 3) + 1).toFixed(2);
+        const value = window.prompt("New total storage budget in GiB", suggested);
+        if (value === null) return;
+        const budgetBytes = Math.floor(Number(value) * (1024 ** 3));
+        if (!Number.isSafeInteger(budgetBytes) || budgetBytes <= currentSnapshot.bytesStored) {
+          throw new Error("BUDGET_MUST_EXCEED_STORED_BYTES");
+        }
+        body = { budgetBytes };
+      }
+      await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/" + name, {
+        method: "POST",
+        body: JSON.stringify(body)
+      });
+      notice(name === "cancel" ? "Stop requested. Queued tasks are being stopped." : "Job updated.", "success");
       await refresh();
     } catch (error) {
       notice(error.message || "REQUEST_FAILED", "error");
+    }
+  }
+
+  async function openJob(jobId) {
+    const candidate = String(jobId || "").trim();
+    if (!/^[a-z0-9-]{16,64}$/.test(candidate)) {
+      notice("Enter a valid job ID.", "error");
+      return;
+    }
+    try {
+      const snapshot = await api("/api/jobs/" + encodeURIComponent(candidate), { method: "GET", headers: {} });
+      activeJobId = candidate;
+      localStorage.setItem("image-scraper-active-job", activeJobId);
+      $("job-id").textContent = "Job " + activeJobId;
+      $("job-panel").hidden = false;
+      $("new-job-panel").hidden = true;
+      render(snapshot);
+      notice("Existing job opened.", "success");
+      refresh();
+    } catch (error) {
+      notice(error.message || "JOB_NOT_FOUND", "error");
     }
   }
 
@@ -124,7 +178,7 @@
         })
       });
       activeJobId = result.jobId;
-      sessionStorage.setItem("image-scraper-active-job", activeJobId);
+      localStorage.setItem("image-scraper-active-job", activeJobId);
       $("job-id").textContent = "Job " + activeJobId;
       $("job-panel").hidden = false;
       $("new-job-panel").hidden = true;
@@ -140,6 +194,10 @@
     }
   });
 
+  $("recover-button").addEventListener("click", () => openJob($("recover-job-id").value));
+  $("recover-job-id").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") openJob($("recover-job-id").value);
+  });
   $("pause-button").addEventListener("click", () => action("pause"));
   $("resume-button").addEventListener("click", () => action("resume"));
   $("cancel-button").addEventListener("click", () => {
@@ -182,7 +240,7 @@
         method: "POST",
         body: JSON.stringify(report)
       });
-      notice(result.verified ? "Verification passed." : "Verification did not pass.", result.verified ? "success" : "error");
+      notice(result.verified ? "Local export script attestation accepted." : "Attestation did not pass.", result.verified ? "success" : "error");
       await refresh();
     } catch (error) {
       notice(error.message || "VERIFICATION_FAILED", "error");
@@ -206,8 +264,9 @@
       $("cancel-button").disabled = true;
       currentSnapshot = null;
       activeJobId = "";
-      sessionStorage.removeItem("image-scraper-active-job");
+      localStorage.removeItem("image-scraper-active-job");
       $("job-panel").hidden = true;
+      $("retention-countdown").hidden = true;
       $("new-job-panel").hidden = false;
       $("job-form").reset();
       $("concurrency-value").textContent = "5";
@@ -219,6 +278,7 @@
   });
 
   if (activeJobId) {
+    $("recover-job-id").value = activeJobId;
     $("job-id").textContent = "Job " + activeJobId;
     $("job-panel").hidden = false;
     $("new-job-panel").hidden = true;
