@@ -201,8 +201,7 @@
       const settledSnapshot = snapshot.status === "verified" &&
         Number(snapshot.activePermits || 0) === 0 && (snapshot.taskCounts?.leased || 0) === 0 &&
         snapshot.bytesReserved === 0;
-      if (snapshot.status === "abandoned" || (snapshot.status === "verified" && Number(snapshot.activePermits || 0) === 0 &&
-        (snapshot.taskCounts?.leased || 0) === 0 && snapshot.bytesReserved === 0) ||
+      if (snapshot.status === "abandoned" || settledSnapshot ||
         (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
@@ -279,6 +278,8 @@
     const pages = config.pages.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
     $("start-button").disabled = true;
     $("start-button").textContent = "Starting…";
+    $("start-notice").textContent = "";
+    $("start-notice").className = "notice";
     try {
       const result = await api("/api/jobs", {
         method: "POST",
@@ -302,7 +303,8 @@
       notice("Job started.", "success");
       refreshTimer = setTimeout(refresh, 1500);
     } catch (error) {
-      window.alert(error.message || "JOB_START_FAILED");
+      $("start-notice").textContent = error.message || "JOB_START_FAILED";
+      $("start-notice").className = "notice error";
     } finally {
       $("start-button").disabled = false;
       $("start-button").textContent = "Start scraping";
