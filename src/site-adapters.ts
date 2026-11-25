@@ -3,6 +3,7 @@ import type { DiscoveryResult } from "./types";
 
 const NON_IMAGE = /\.(?:mp4|webm|mov|m4v|mp3|ogg|pdf|css|js|woff2?|ttf|otf)(?:$|[?#])/i;
 const MAX_IMAGES = 2000;
+const MAX_PAGES = 2000;
 const MAX_API_PAGES = 500;
 const SEXCOM_MEDIA_BASE = "https://imagex1.sx.cdn.live";
 const SEXCOM_PAGE_SIZE = 40;
