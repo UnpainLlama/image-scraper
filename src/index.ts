@@ -31,6 +31,39 @@ async function jobSnapshot(env: Env, jobId: string): Promise<JobSnapshot | null>
   return await response.json() as JobSnapshot;
 }
 
+async function reconcileStorage(env: Env, jobId: string): Promise<void> {
+  const start = await jobRequest(env, jobId, "/storage/reconcile/start", {});
+  if (!start.ok) throw new ScrapeError("STORAGE_RECONCILE_UNAVAILABLE", true, 3);
+  const startResult = await start.json() as { result: string };
+  if (startResult.result !== "accepted") throw new ScrapeError("STORAGE_RECONCILE_REJECTED");
+  const prefix = "jobs/" + jobId + "/objects/";
+  let cursor: string | undefined;
+  let batch: Array<{ sha256: string; key: string; size: number }> = [];
+  const publish = async (): Promise<void> => {
+    if (!batch.length) return;
+    const response = await jobRequest(env, jobId, "/storage/reconcile/batch", { items: batch });
+    if (!response.ok) throw new ScrapeError("STORAGE_RECONCILE_BATCH_FAILED", true, 3);
+    const result = await response.json() as { result: string };
+    if (result.result !== "accepted") throw new ScrapeError("STORAGE_RECONCILE_BATCH_REJECTED");
+    batch = [];
+  };
+  do {
+    const page = await env.IMAGES.list({ prefix, cursor, limit: 1000, include: ["customMetadata"] });
+    for (const object of page.objects) {
+      const sha256 = object.customMetadata?.sha256 || "";
+      if (!HASH_PATTERN.test(sha256)) throw new ScrapeError("OBJECT_METADATA_INCOMPLETE");
+      batch.push({ sha256, key: object.key, size: object.size });
+      if (batch.length >= 250) await publish();
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  await publish();
+  const finish = await jobRequest(env, jobId, "/storage/reconcile/finish", {});
+  if (!finish.ok) throw new ScrapeError("STORAGE_RECONCILE_FINISH_FAILED", true, 3);
+  const finished = await finish.json() as { result: string };
+  if (finished.result !== "reconciled") throw new ScrapeError("STORAGE_RECONCILE_UNCONFIRMED");
+}
+
 async function registerPages(env: Env, jobId: string, pages: TaskRegistration[]): Promise<void> {
   if (!pages.length) return;
   for (let start = 0; start < pages.length; start += 500) {
@@ -326,6 +359,7 @@ async function buildManifest(env: Env, jobId: string): Promise<Response> {
       ((snapshot.taskCounts?.pending || 0) !== 0 || snapshot.pendingPages !== 0 || snapshot.pendingImages !== 0))) {
     return json({ error: "JOB_NOT_READY_FOR_EXPORT" }, 409);
   }
+  await reconcileStorage(env, jobId);
   const store = new R2StorageAdapter(env.IMAGES);
   const prefix = "jobs/" + jobId + "/";
   const files: Array<{ key: string; size: number; sha256: string; contentType: string }> = [];
@@ -373,6 +407,11 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
     return json(result, response.status);
   }
   if (action === "clear" && request.method === "POST") {
+    const snapshot = await jobSnapshot(env, jobId);
+    if (!snapshot) return json({ error: "JOB_NOT_FOUND" }, 404);
+    if (!["abandoned", "clearing", "clearing_failed"].includes(snapshot.status)) {
+      await reconcileStorage(env, jobId);
+    }
     const response = await jobRequest(env, jobId, "/clear", {});
     const result = await response.json().catch(() => ({}));
     return json(result, response.status);
