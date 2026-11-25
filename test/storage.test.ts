@@ -14,7 +14,7 @@ describe("image format detection", () => {
 
 describe("R2 key safety", () => {
   it("removes traversal and unsafe path characters", () => {
-    expect(safePathSegment("../private")).toBe("private");
+    expect(safePathSegment("../private")).toBe("_private");
     expect(imageObjectKey("job-1", new URL("https://example.com/a/b.jpg"), { extension: "jpg", contentType: "image/jpeg" }, "abcdef0123456789"))
       .toBe("jobs/job-1/example.com/a/b-abcdef012345.jpg");
   });
