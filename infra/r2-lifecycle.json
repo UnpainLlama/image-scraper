@@ -1,12 +1,17 @@
 {
   "rules": [
     {
-      "id": "Expire abandoned scraper jobs",
-      "conditions": { "prefix": "jobs/" },
+      "id": "Expire temporary scraper objects",
+      "conditions": { "prefix": "tmp/" },
       "enabled": true,
       "deleteObjectsTransition": {
-        "condition": { "type": "Age", "maxAge": 604800 }
-      },
+        "condition": { "type": "Age", "maxAge": 86400 }
+      }
+    },
+    {
+      "id": "Abort incomplete scraper multipart uploads",
+      "conditions": { "prefix": "" },
+      "enabled": true,
       "abortMultipartUploadsTransition": {
         "condition": { "type": "Age", "maxAge": 86400 }
       }
