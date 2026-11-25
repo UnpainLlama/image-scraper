@@ -66,7 +66,7 @@ export function imageObjectKey(jobId: string, source: URL, format: ImageFormat, 
   const safeDirectories = rawSegments.map(safePathSegment);
   let base = safePathSegment(last).replace(/\.[^.]+$/, "");
   if (!base) base = "image";
-  const filename = base.slice(0, 90) + "-" + sha256Hex.slice(0, 12) + "." + format.extension;
+  const filename = base.slice(0, 90) + "-" + sha256Hex.slice(0, 20) + "." + format.extension;
   return ["jobs", safePathSegment(jobId), domain, ...safeDirectories, filename].join("/");
 }
 
@@ -85,23 +85,37 @@ export async function putStreamAndHash(
   let prefixLength = 0;
   let digest = "";
 
+  const reservationBatchBytes = 256 * 1024;
+  let pendingChunks: Uint8Array[] = [];
+  let pendingBytes = 0;
+
   const transformed = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
     async transform(chunk, controller) {
       const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
       if (size + bytes.byteLength > maxBytes) throw new ScrapeError("FILE_TOO_LARGE");
-      const permitted = await reserve(bytes.byteLength);
-      if (!permitted) throw new ScrapeError("STORAGE_BUDGET_REACHED");
       size += bytes.byteLength;
-      reservedBytes += bytes.byteLength;
       hasher.update(bytes);
       if (prefixLength < 512) {
         const part = bytes.slice(0, 512 - prefixLength);
         prefixParts.push(part);
         prefixLength += part.byteLength;
       }
-      controller.enqueue(bytes);
+      pendingChunks.push(bytes);
+      pendingBytes += bytes.byteLength;
+      if (pendingBytes >= reservationBatchBytes) {
+        if (!await reserve(pendingBytes)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
+        reservedBytes += pendingBytes;
+        for (const pending of pendingChunks) controller.enqueue(pending);
+        pendingChunks = [];
+        pendingBytes = 0;
+      }
     },
-    flush() {
+    async flush(controller) {
+      if (pendingBytes > 0) {
+        if (!await reserve(pendingBytes)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
+        reservedBytes += pendingBytes;
+        for (const pending of pendingChunks) controller.enqueue(pending);
+      }
       digest = toHex(hasher.digest());
     }
   }));
