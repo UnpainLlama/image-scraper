@@ -89,7 +89,7 @@ export function discoverFromHtml(html: string, baseUrl: string): DiscoveryResult
   for (const element of Array.from(document.querySelectorAll("style"))) addCss(element.textContent || "");
 
   return {
-    images: Array.from(images).map(url => ({ url, source: baseUrl })),
+    images: Array.from(images).map(url => ({ url })),
     stylesheets: Array.from(stylesheets).slice(0, 50),
     pages: Array.from(pages)
   };
