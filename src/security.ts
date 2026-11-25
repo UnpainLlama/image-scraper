@@ -151,6 +151,19 @@ async function getRobotsPolicy(url: URL): Promise<RobotsPolicy> {
   return policy;
 }
 
+function escapeBrowserPattern(value: string): string {
+  return value.split("").map(character => "\\.^$*+?()[]{}|".includes(character) ? "\\" + character : character).join("");
+}
+
+export function browserRequestPatterns(allowedOrigin: string): { allowRequestPattern: string[]; rejectRequestPattern: string[] } {
+  const origin = escapeBrowserPattern(new URL(allowedOrigin).origin);
+  const ownSite = origin + "(?:\\/|$)";
+  return {
+    allowRequestPattern: ["/^" + ownSite + "/i"],
+    rejectRequestPattern: ["/^(?!" + ownSite + ").*/i"]
+  };
+}
+
 async function acquire(env: Env, jobId: string, domain: string, crawlDelayMs: number): Promise<string> {
   const stub = env.JOBS.get(env.JOBS.idFromName(jobId));
   const response = await stub.fetch("https://job.internal/permit/acquire", {
@@ -172,6 +185,20 @@ async function release(env: Env, jobId: string, permitId: string): Promise<void>
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ permitId })
   });
   if (!response.ok) throw new ScrapeError("PERMIT_RELEASE_FAILED", true, 3);
+}
+
+export async function acquireBrowserPagePermit(
+  env: Env,
+  jobId: string,
+  input: string,
+  allowedOrigin: string
+): Promise<() => Promise<void>> {
+  const target = validatePublicUrl(input);
+  if (target.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
+  const policy = await getRobotsPolicy(target);
+  if (!isRobotsAllowed(target.pathname + target.search, policy)) throw new ScrapeError("ROBOTS_DISALLOWED");
+  const permitId = await acquire(env, jobId, target.hostname, policy.crawlDelayMs);
+  return async () => release(env, jobId, permitId);
 }
 
 export async function fetchForJob(env: Env, jobId: string, input: string, headers?: HeadersInit, allowedOrigin?: string): Promise<FetchResult> {
