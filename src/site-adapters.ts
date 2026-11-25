@@ -1,10 +1,9 @@
 import { parseHTML } from "linkedom";
 import type { DiscoveryResult } from "./types";
 
-const IMAGE_EXT = /\.(?:avif|bmp|gif|jpe?g|png|tiff?|webp)(?:$|[?#])/i;
 const NON_IMAGE = /\.(?:mp4|webm|mov|m4v|mp3|ogg|pdf|css|js|woff2?|ttf|otf)(?:$|[?#])/i;
 const MAX_IMAGES = 2000;
-const MAX_PAGES = 2000;
+const MAX_API_PAGES = 500;
 const SEXCOM_MEDIA_BASE = "https://imagex1.sx.cdn.live";
 const SEXCOM_PAGE_SIZE = 40;
 
@@ -163,13 +162,13 @@ export async function discoverSexComApiPage(
 ): Promise<DiscoveryResult> {
   const current = new URL(pageUrl);
   const searchParams = current.searchParams;
-  const page = Math.max(1, Math.min(500, Number(searchParams.get("_image_scraper_page") || searchParams.get("page") || 1)));
+  const page = Math.max(1, Math.min(MAX_API_PAGES, Number(searchParams.get("_image_scraper_page") || searchParams.get("page") || 1)));
   const tag = current.pathname.match(/\/tags?\/(\d+)/i)?.[1];
   const pathSearch = current.pathname.match(/\/search\/([^/]+)/i)?.[1];
   const query = searchParams.get("search") || searchParams.get("q") || (pathSearch ? decodeURIComponent(pathSearch) : "");
   const endpoint = tag ? "/portal/api/tags/" + encodeURIComponent(tag) + "/gifs"
     : query ? "/portal/api/gifs/search" : "/portal/api/gifs";
-  const apiUrl = new URL(endpoint, current.origin);
+  const apiUrl = new URL(endpoint, "https://www.sex.com");
   apiUrl.searchParams.set("page", String(page));
   apiUrl.searchParams.set("limit", String(SEXCOM_PAGE_SIZE));
   if (query) apiUrl.searchParams.set("search", query);
@@ -189,7 +188,7 @@ export async function discoverSexComApiPage(
     const url = absolute(raw, SEXCOM_MEDIA_BASE + "/");
     if (url) addImage(output, url, pageUrl);
   }
-  if (rows.length === SEXCOM_PAGE_SIZE && page < 500) {
+  if (rows.length === SEXCOM_PAGE_SIZE && page < MAX_API_PAGES) {
     const next = new URL(pageUrl);
     next.searchParams.set("_image_scraper_page", String(page + 1));
     next.searchParams.delete("page");
