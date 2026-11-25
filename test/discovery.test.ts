@@ -25,4 +25,19 @@ describe("image discovery", () => {
     expect(discoverFromCss(".x{background:url('../images/a.gif')}", "https://example.com/css/site.css"))
       .toEqual(["https://example.com/images/a.gif"]);
   });
+
+  it("skips font and non-image files in CSS and applies the per-page cap", () => {
+    const css = ".a{background:url(/a.png)}@font-face{src:url(/font.woff2)}.b{background:url(/b.jpg)}";
+    expect(discoverFromCss(css, "https://example.com/site.css", 1))
+      .toEqual(["https://example.com/a.png"]);
+  });
+
+  it("skips font URLs in inline CSS", () => {
+    const result = discoverFromHtml(
+      '<style>@font-face{src:url(/font.woff)}.a{background:url(/background.png)}</style>',
+      "https://example.com/",
+      10
+    );
+    expect(result.images.map(item => item.url)).toEqual(["https://example.com/background.png"]);
+  });
 });
