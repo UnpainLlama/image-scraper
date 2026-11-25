@@ -1,0 +1,22 @@
+{
+  "name": "image-scraper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "linkedom": "^0.18.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250424.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2",
+    "wrangler": "^4.30.0"
+  }
+}
