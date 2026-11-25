@@ -166,16 +166,25 @@ export class JobDurableObject extends DurableObject<Env> {
         return json({ accepted: true });
       }
 
-      if (path === "/enqueue-image" && request.method === "POST") {
-        const body = await readJson<{ urlHash: string; taskId: string }>(request);
-        if (!HASH_PATTERN.test(body.urlHash) || !HASH_PATTERN.test(body.taskId)) return json({ error: "INVALID_TASK" }, 400);
-        if (row.status !== "running" || row.images_discovered >= MAX_IMAGES_PER_JOB) return json({ accepted: false });
-        this.ctx.storage.sql.exec("INSERT OR IGNORE INTO image_urls (hash) VALUES (?)", body.urlHash);
-        const inserted = Number((this.ctx.storage.sql.exec("SELECT changes() AS n").toArray() as unknown as Array<{ n: number }>)[0]?.n || 0);
-        if (!inserted) return json({ accepted: false, duplicate: true });
-        this.ctx.storage.sql.exec("INSERT OR IGNORE INTO tasks (task_id, kind, created_at) VALUES (?, 'image', ?)", body.taskId, Date.now());
-        this.ctx.storage.sql.exec("UPDATE state SET images_discovered = images_discovered + 1, pending_images = pending_images + 1 WHERE id = 1");
-        return json({ accepted: true });
+      if (path === "/enqueue-images" && request.method === "POST") {
+        const body = await readJson<{ items: Array<{ urlHash: string; taskId: string }> }>(request);
+        if (!Array.isArray(body.items) || body.items.length > 50 ||
+            body.items.some(item => !HASH_PATTERN.test(item.urlHash) || !HASH_PATTERN.test(item.taskId))) {
+          return json({ error: "INVALID_TASK_BATCH" }, 400);
+        }
+        const current = this.readState();
+        if (!current || current.status !== "running") return json({ acceptedTaskIds: [] });
+        const acceptedTaskIds: string[] = [];
+        for (const item of body.items) {
+          if (current.images_discovered + acceptedTaskIds.length >= MAX_IMAGES_PER_JOB) break;
+          this.ctx.storage.sql.exec("INSERT OR IGNORE INTO image_urls (hash) VALUES (?)", item.urlHash);
+          const inserted = Number((this.ctx.storage.sql.exec("SELECT changes() AS n").toArray() as unknown as Array<{ n: number }>)[0]?.n || 0);
+          if (!inserted) continue;
+          this.ctx.storage.sql.exec("INSERT OR IGNORE INTO tasks (task_id, kind, created_at) VALUES (?, 'image', ?)", item.taskId, Date.now());
+          this.ctx.storage.sql.exec("UPDATE state SET images_discovered = images_discovered + 1, pending_images = pending_images + 1 WHERE id = 1");
+          acceptedTaskIds.push(item.taskId);
+        }
+        return json({ acceptedTaskIds });
       }
 
       if (path === "/task/claim" && request.method === "POST") {
