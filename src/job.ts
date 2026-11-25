@@ -164,6 +164,7 @@ export class JobDurableObject extends DurableObject<Env> {
   }
 
   private async snapshot(row: StateRow): Promise<JobSnapshot> {
+    await this.cleanExpiredPermits();
     const errors = this.ctx.storage.sql.exec("SELECT code, count FROM error_counts ORDER BY code").toArray() as unknown as Array<{ code: string; count: number }>;
     const settings = this.getSettings(row);
     const activeRows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM permits WHERE expires_at > ?", Date.now()).toArray() as unknown as Array<{ count: number }>;
