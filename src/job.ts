@@ -73,6 +73,7 @@ export class JobDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS domain_limits (domain TEXT PRIMARY KEY, next_allowed_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS error_counts (code TEXT PRIMARY KEY, count INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS reconcile_objects (sha256 TEXT PRIMARY KEY, final_key TEXT NOT NULL, size INTEGER NOT NULL)");
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS reconcile_meta (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, lease_until INTEGER NOT NULL)");
     this.ensureColumn("state", "last_activity_at", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("state", "abandoned_at", "INTEGER");
     this.ensureColumn("state", "cleanup_at", "INTEGER");
@@ -259,6 +260,11 @@ export class JobDurableObject extends DurableObject<Env> {
           );
         } catch {
           const backoff = Math.min(15 * 60_000, 15_000 * Math.max(1, Math.min(60, batch.length)));
+          const retryAt = Date.now() + backoff;
+          for (const task of batch) this.ctx.storage.sql.exec(
+            "UPDATE tasks SET enqueued = 0, next_attempt_at = ? WHERE task_id = ? AND state = 'pending'",
+            retryAt, task.task_id
+          );
           await this.scheduleAlarm(backoff);
           return;
         }
@@ -567,6 +573,10 @@ export class JobDurableObject extends DurableObject<Env> {
       }
 
       if (path === "/storage/reconcile/start" && request.method === "POST") {
+        const body = await readJson<{ token: string }>(request);
+        if (typeof body.token !== "string" || body.token.length < 16 || body.token.length > 128) {
+          return json({ result: "rejected", reason: "INVALID_RECONCILE_TOKEN" }, 400);
+        }
         await this.cleanExpiredPermits();
         const current = this.readState();
         const tasks = this.taskCounts();
@@ -575,14 +585,22 @@ export class JobDurableObject extends DurableObject<Env> {
           tasks.leased !== 0 || Number(permits[0]?.count || 0) !== 0 || current.bytes_reserved !== 0) {
           return json({ result: "rejected", reason: "JOB_NOT_QUIESCENT" }, 409);
         }
-        this.ctx.storage.sql.exec("DELETE FROM reconcile_objects");
-        this.touch();
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec("DELETE FROM reconcile_objects");
+          this.ctx.storage.sql.exec("INSERT INTO reconcile_meta (id, token, lease_until) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET token = excluded.token, lease_until = excluded.lease_until",
+            body.token, Date.now() + 15 * 60 * 1000);
+          this.touch();
+        });
         return json({ result: "accepted" });
       }
 
       if (path === "/storage/reconcile/batch" && request.method === "POST") {
-        const body = await readJsonLimit<{ items: Array<{ sha256: string; key: string; size: number }> }>(request, 128_000);
+        const body = await readJsonLimit<{ token: string; items: Array<{ sha256: string; key: string; size: number }> }>(request, 128_000);
         if (!Array.isArray(body.items) || body.items.length > 250) return json({ result: "rejected", reason: "INVALID_RECONCILE_BATCH" }, 400);
+        const meta = this.ctx.storage.sql.exec("SELECT token, lease_until FROM reconcile_meta WHERE id = 1").toArray() as unknown as Array<{ token: string; lease_until: number }>;
+        if (!meta.length || meta[0]!.token !== body.token || Number(meta[0]!.lease_until) <= Date.now()) {
+          return json({ result: "rejected", reason: "RECONCILE_SESSION_EXPIRED" }, 409);
+        }
         const jobPrefix = "jobs/" + row.job_id + "/objects/";
         for (const item of body.items) {
           const expected = jobPrefix + item.sha256;
@@ -596,11 +614,18 @@ export class JobDurableObject extends DurableObject<Env> {
             this.ctx.storage.sql.exec("INSERT OR REPLACE INTO reconcile_objects (sha256, final_key, size) VALUES (?, ?, ?)",
               item.sha256, item.key, item.size);
           }
+          this.ctx.storage.sql.exec("UPDATE reconcile_meta SET lease_until = ? WHERE id = 1 AND token = ?",
+            Date.now() + 15 * 60 * 1000, body.token);
         });
         return json({ result: "accepted", count: body.items.length });
       }
 
       if (path === "/storage/reconcile/finish" && request.method === "POST") {
+        const body = await readJson<{ token: string }>(request);
+        const meta = this.ctx.storage.sql.exec("SELECT token, lease_until FROM reconcile_meta WHERE id = 1").toArray() as unknown as Array<{ token: string; lease_until: number }>;
+        if (!meta.length || meta[0]!.token !== body.token || Number(meta[0]!.lease_until) <= Date.now()) {
+          return json({ result: "rejected", reason: "RECONCILE_SESSION_EXPIRED" }, 409);
+        }
         const now = Date.now();
         let objects = 0;
         let bytes = 0;
@@ -618,6 +643,7 @@ export class JobDurableObject extends DurableObject<Env> {
           bytes = Number(totals[0]?.bytes || 0);
           this.ctx.storage.sql.exec("UPDATE state SET bytes_stored = ?, images_stored = ?, bytes_reserved = 0, last_activity_at = ? WHERE id = 1",
             bytes, objects, now);
+          this.ctx.storage.sql.exec("DELETE FROM reconcile_meta WHERE id = 1 AND token = ?", body.token);
           this.touch();
         });
         return json({ result: "reconciled", objects, bytes });
@@ -678,6 +704,9 @@ export class JobDurableObject extends DurableObject<Env> {
         const body = await readJson<{ budgetBytes?: number }>(request);
         const current = this.readState();
         if (!current || !["paused", "budget-paused", "verified"].includes(current.status)) return json({ error: "JOB_NOT_RESUMABLE" }, 409);
+        this.ctx.storage.sql.exec("DELETE FROM reconcile_meta WHERE lease_until <= ?", Date.now());
+        const reconciliation = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM reconcile_meta").toArray() as unknown as Array<{ count: number }>;
+        if (Number(reconciliation[0]?.count || 0) > 0) return json({ error: "STORAGE_RECONCILIATION_IN_PROGRESS" }, 409);
         const settings = this.getSettings(current);
         if (body.budgetBytes !== undefined) {
           const nextBudget = Math.floor(Number(body.budgetBytes));
@@ -732,6 +761,9 @@ export class JobDurableObject extends DurableObject<Env> {
         const current = this.readState();
         if (!current || !["completed", "cancelled", "verified", "abandoned", "clearing", "clearing_failed"].includes(current.status)) return json({ error: "JOB_NOT_CLEARABLE" }, 409);
         if (current.status !== "abandoned" && current.verified !== 1) return json({ error: "VERIFIED_EXPORT_REQUIRED" }, 409);
+        this.ctx.storage.sql.exec("DELETE FROM reconcile_meta WHERE lease_until <= ?", Date.now());
+        const reconciliation = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM reconcile_meta").toArray() as unknown as Array<{ count: number }>;
+        if (Number(reconciliation[0]?.count || 0) > 0) return json({ error: "STORAGE_RECONCILIATION_IN_PROGRESS" }, 409);
         const tasks = this.taskCounts();
         if (current.status !== "abandoned" && (tasks.pending !== 0 || tasks.leased !== 0 ||
           current.pending_pages !== 0 || current.pending_images !== 0 || current.bytes_reserved !== 0)) {
