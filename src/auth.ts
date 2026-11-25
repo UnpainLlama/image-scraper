@@ -3,8 +3,6 @@ import type { Env } from "./types";
 
 export const SESSION_TTL_SECONDS = 12 * 60 * 60;
 const COOKIE_NAME = "__Host-image_scraper_session";
-const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_ATTEMPT_LIMIT = 5;
 const encoder = new TextEncoder();
 
 function encodeBase64Url(bytes: Uint8Array): string {
@@ -108,7 +106,9 @@ async function recordLoginAttempt(env: Env): Promise<{ allowed: boolean; retryAf
   const limiter = env.JOBS.get(env.JOBS.idFromName("image-scraper-auth-rate-limit"));
   const response = await limiter.fetch("https://auth.internal/auth/attempt", { method: "POST" });
   const result = await response.json() as { allowed?: boolean; retryAfterSeconds?: number };
-  return { allowed: response.ok && result.allowed === true, retryAfterSeconds: result.retryAfterSeconds };
+  if (response.status === 429) return { allowed: false, retryAfterSeconds: result.retryAfterSeconds };
+  if (!response.ok) throw new Error("LOGIN_RATE_LIMIT_UNAVAILABLE");
+  return { allowed: result.allowed === true, retryAfterSeconds: result.retryAfterSeconds };
 }
 
 async function resetLoginAttempts(env: Env): Promise<void> {
@@ -117,6 +117,10 @@ async function resetLoginAttempts(env: Env): Promise<void> {
 }
 
 export async function handleAuthRoute(request: Request, env: Env, path: string): Promise<Response | null> {
+  const origin = request.headers.get("origin");
+  if (request.method !== "GET" && origin && origin !== new URL(request.url).origin) {
+    return json({ error: "CROSS_ORIGIN_REQUEST" }, 403);
+  }
   if (path === "/api/auth/status" && request.method === "GET") {
     const configured = isConfigured(env);
     return json({ configured, authenticated: configured && await isAuthenticated(request, env) });
