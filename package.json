@@ -15,7 +15,7 @@
     "linkedom": "^0.18.12"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250424.0",
+    "@cloudflare/workers-types": "^5.20261125.1",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2",
     "wrangler": "^4.30.0"
