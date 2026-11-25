@@ -183,7 +183,7 @@ export class JobDurableObject extends DurableObject<Env> {
         if (!HASH_PATTERN.test(body.taskId)) return json({ found: false, claimed: false }, 400);
         const task = this.ctx.storage.sql.exec("SELECT claimed_until FROM tasks WHERE task_id = ?", body.taskId).toArray() as unknown as Array<{ claimed_until: number }>;
         if (!task.length) return json({ found: false, claimed: false });
-        if (Number(task[0].claimed_until) > Date.now()) return json({ found: true, claimed: false });
+        if (Number(task[0]?.claimed_until || 0) > Date.now()) return json({ found: true, claimed: false });
         this.ctx.storage.sql.exec("UPDATE tasks SET claimed_until = ? WHERE task_id = ?", Date.now() + MAX_PERMIT_MS, body.taskId);
         return json({ found: true, claimed: true });
       }
@@ -255,7 +255,7 @@ export class JobDurableObject extends DurableObject<Env> {
       if (path === "/reserve" && request.method === "POST") {
         const body = await readJson<{ permitId: string; bytes: number }>(request);
         const amount = Math.floor(Number(body.bytes));
-        if (!HASH_PATTERN.test(body.permitId.replace(/-/g, "")) || !Number.isSafeInteger(amount) || amount < 1 || amount > 50 * 1024 * 1024) return json({ allowed: false });
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.permitId) || !Number.isSafeInteger(amount) || amount < 1 || amount > 50 * 1024 * 1024) return json({ allowed: false });
         const current = this.readState();
         if (!current || current.status !== "running") return json({ allowed: false, status: current?.status || "missing" });
         const active = this.ctx.storage.sql.exec("SELECT expires_at FROM permits WHERE permit_id = ?", body.permitId).toArray() as unknown as Array<{ expires_at: number }>;

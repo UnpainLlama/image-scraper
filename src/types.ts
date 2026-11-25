@@ -1,6 +1,5 @@
 export type JobMode = "exact" | "crawl";
 export type JobStatus = "initializing" | "running" | "paused" | "budget-paused" | "completed" | "cancelled" | "clearing";
-
 export interface JobSettings {
   allowedOrigin: string;
   mode: JobMode;
@@ -11,27 +10,10 @@ export interface JobSettings {
   budgetBytes: number;
   perDomainDelayMs: number;
 }
-
-export interface DiscoveryMessage {
-  jobId: string;
-  pageUrl: string;
-  depth: number;
-  taskId: string;
-}
-
-export interface DownloadMessage {
-  jobId: string;
-  imageUrl: string;
-  sourcePage: string;
-  taskId: string;
-}
-
+export interface DiscoveryMessage { jobId: string; pageUrl: string; depth: number; taskId: string; }
+export interface DownloadMessage { jobId: string; imageUrl: string; sourcePage: string; taskId: string; }
 export type QueuePayload = DiscoveryMessage | DownloadMessage;
-
-export interface BrowserRunBinding {
-  quickAction(action: "content", options: { url: string }): Promise<Response>;
-}
-
+export interface BrowserRunBinding { quickAction(action: "content", options: { url: string }): Promise<Response>; }
 export interface Env {
   ASSETS: Fetcher;
   JOBS: DurableObjectNamespace;
@@ -39,8 +21,9 @@ export interface Env {
   DISCOVERY_QUEUE: Queue<DiscoveryMessage>;
   DOWNLOAD_QUEUE: Queue<DownloadMessage>;
   BROWSER: BrowserRunBinding;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
 }
-
 export interface JobSnapshot {
   jobId: string;
   status: JobStatus;
@@ -60,31 +43,8 @@ export interface JobSnapshot {
   verified: boolean;
   failedByCode: Array<{ code: string; count: number }>;
 }
-
-export interface FetchResult {
-  response: Response;
-  finalUrl: URL;
-  permitId: string;
-  release: () => Promise<void>;
-}
-
-export interface RobotsPolicy {
-  rules: Array<{ allow: boolean; path: string }>;
-  crawlDelayMs: number;
-}
-
-export interface ImageCandidate {
-  url: string;
-  source: string;
-}
-
-export interface DiscoveryResult {
-  images: ImageCandidate[];
-  stylesheets: string[];
-  pages: string[];
-}
-
-export interface ImageFormat {
-  extension: string;
-  contentType: string;
-}
+export interface FetchResult { response: Response; finalUrl: URL; permitId: string; release: () => Promise<void>; }
+export interface RobotsPolicy { rules: Array<{ allow: boolean; path: string }>; crawlDelayMs: number; }
+export interface ImageCandidate { url: string; source: string; }
+export interface DiscoveryResult { images: ImageCandidate[]; stylesheets: string[]; pages: string[]; }
+export interface ImageFormat { extension: string; contentType: string; }
