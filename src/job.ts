@@ -67,7 +67,7 @@ export class JobDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pages (hash TEXT PRIMARY KEY)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS image_urls (hash TEXT PRIMARY KEY)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS content_claims (sha256 TEXT PRIMARY KEY, state TEXT NOT NULL, task_id TEXT NOT NULL, lease_until INTEGER NOT NULL, temp_key TEXT NOT NULL, final_key TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)");
-    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, kind TEXT NOT NULL, created_at INTEGER NOT NULL, claimed_until INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'pending', lease_until INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, enqueued INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0, error_code TEXT)");
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, kind TEXT NOT NULL, created_at INTEGER NOT NULL, claimed_until INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'pending', lease_until INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, enqueued INTEGER NOT NULL DEFAULT 0, next_attempt_at INTEGER NOT NULL DEFAULT 0, next_publish_at INTEGER NOT NULL DEFAULT 0, error_code TEXT)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS permits (permit_id TEXT PRIMARY KEY, domain TEXT NOT NULL, expires_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS reservations (permit_id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, expires_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS domain_limits (domain TEXT PRIMARY KEY, next_allowed_at INTEGER NOT NULL)");
@@ -86,6 +86,7 @@ export class JobDurableObject extends DurableObject<Env> {
     this.ensureColumn("tasks", "attempt_count", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("tasks", "enqueued", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("tasks", "next_attempt_at", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("tasks", "next_publish_at", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("tasks", "error_code", "TEXT");
     const row = this.readState();
     if (row && !row.last_activity_at) this.ctx.storage.sql.exec("UPDATE state SET last_activity_at = created_at WHERE id = 1");
@@ -244,7 +245,8 @@ export class JobDurableObject extends DurableObject<Env> {
     if (!row || row.status !== "running") return;
     const now = Date.now();
     const tasks = this.ctx.storage.sql.exec(
-      "SELECT task_id, kind FROM tasks WHERE state = 'pending' AND next_attempt_at <= ? ORDER BY created_at LIMIT 2000", now
+      "SELECT task_id, kind FROM tasks WHERE state = 'pending' AND next_attempt_at <= ? AND (enqueued = 0 OR next_publish_at <= ?) ORDER BY created_at LIMIT 2000",
+      now, now
     ).toArray() as unknown as Array<{ task_id: string; kind: "page" | "image" }>;
     for (const kind of ["page", "image"] as const) {
       const selected = tasks.filter(task => task.kind === kind);
@@ -256,13 +258,13 @@ export class JobDurableObject extends DurableObject<Env> {
           await producer.sendBatch(batch.map(task => ({ body: { jobId: row.job_id, taskId: task.task_id } as QueuePayload })));
           const next = Date.now() + TASK_REPUBLISH_MS;
           for (const task of batch) this.ctx.storage.sql.exec(
-            "UPDATE tasks SET enqueued = 1, next_attempt_at = ? WHERE task_id = ? AND state = 'pending'", next, task.task_id
+            "UPDATE tasks SET enqueued = 1, next_publish_at = ? WHERE task_id = ? AND state = 'pending'", next, task.task_id
           );
         } catch {
           const backoff = Math.min(15 * 60_000, 15_000 * Math.max(1, Math.min(60, batch.length)));
           const retryAt = Date.now() + backoff;
           for (const task of batch) this.ctx.storage.sql.exec(
-            "UPDATE tasks SET enqueued = 0, next_attempt_at = ? WHERE task_id = ? AND state = 'pending'",
+            "UPDATE tasks SET enqueued = 0, next_attempt_at = ?, next_publish_at = 0 WHERE task_id = ? AND state = 'pending'",
             retryAt, task.task_id
           );
           await this.scheduleAlarm(backoff);
@@ -270,7 +272,10 @@ export class JobDurableObject extends DurableObject<Env> {
         }
       }
     }
-    const next = this.ctx.storage.sql.exec("SELECT MIN(next_attempt_at) AS at FROM tasks WHERE state = 'pending'").toArray() as unknown as Array<{ at: number | null }>;
+    const next = this.ctx.storage.sql.exec(
+      "SELECT MIN(CASE WHEN next_attempt_at > ? THEN next_attempt_at WHEN enqueued = 1 THEN next_publish_at ELSE ? END) AS at FROM tasks WHERE state = 'pending'",
+      Date.now(), Date.now()
+    ).toArray() as unknown as Array<{ at: number | null }>;
     if (next[0]?.at) await this.scheduleAlarm(Math.max(1000, Number(next[0].at) - Date.now()));
   }
 
@@ -351,7 +356,7 @@ export class JobDurableObject extends DurableObject<Env> {
     }
     const now = Date.now();
     await this.cleanExpiredPermits();
-    this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ? WHERE state = 'leased' AND lease_until <= ?", now, now);
+    this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ?, next_publish_at = 0 WHERE state = 'leased' AND lease_until <= ?", now, now);
     const current = this.readState();
     if (!current) return;
     await this.sweepTemporaryObjects(current.job_id);
@@ -505,7 +510,7 @@ export class JobDurableObject extends DurableObject<Env> {
         }
         const seconds = Math.min(900, Math.max(1, Number(body.delaySeconds || Math.min(300, 2 ** Number(tasks[0]!.attempt_count)))));
         const next = Date.now() + seconds * 1000;
-        this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ?, error_code = ? WHERE task_id = ?",
+        this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ?, next_publish_at = 0, error_code = ? WHERE task_id = ?",
           next, code, body.taskId);
         const existing = await this.ctx.storage.getAlarm();
         if (existing === null || existing > next) await this.ctx.storage.setAlarm(next);
@@ -714,7 +719,7 @@ export class JobDurableObject extends DurableObject<Env> {
           settings.budgetBytes = nextBudget;
           this.ctx.storage.sql.exec("UPDATE state SET config = ? WHERE id = 1", JSON.stringify(settings));
         }
-        this.ctx.storage.sql.exec("UPDATE tasks SET enqueued = 0, next_attempt_at = 0 WHERE state = 'pending'");
+        this.ctx.storage.sql.exec("UPDATE tasks SET enqueued = 0, next_attempt_at = 0, next_publish_at = 0 WHERE state = 'pending'");
         this.ctx.storage.sql.exec("UPDATE state SET status = 'running', verified = 0, abandoned_at = NULL, cleanup_at = NULL, last_activity_at = ? WHERE id = 1", Date.now());
         await this.publishPendingTasks();
         return json({ status: "running" });
