@@ -4,6 +4,45 @@
   let currentSnapshot = null;
   let refreshTimer = null;
   let isAuthenticated = false;
+  let recoveryJobId = localStorage.getItem("image-scraper-recovery-job") || "";
+
+  function readLastConfig() {
+    try {
+      const value = JSON.parse(localStorage.getItem("image-scraper-last-config") || "null");
+      if (!value || typeof value !== "object" || typeof value.siteUrl !== "string") return null;
+      return value;
+    } catch {
+      return null;
+    }
+  }
+
+  function currentFormConfig() {
+    return {
+      siteUrl: $("site-url").value.trim(),
+      pages: $("pages").value,
+      mode: $("mode").value,
+      concurrency: Number($("concurrency").value),
+      maxDepth: Number($("depth").value)
+    };
+  }
+
+  function applyFormConfig(config) {
+    if (!config) return;
+    $("site-url").value = config.siteUrl || "";
+    $("pages").value = typeof config.pages === "string" ? config.pages : "";
+    $("mode").value = config.mode === "crawl" ? "crawl" : "exact";
+    $("concurrency").value = String(Math.min(20, Math.max(1, Number(config.concurrency) || 5)));
+    $("concurrency-value").textContent = $("concurrency").value;
+    $("depth").value = String(Math.min(10, Math.max(0, Number(config.maxDepth) || 0)));
+    $("depth-field").hidden = $("mode").value !== "crawl";
+  }
+
+  function rememberRecoveryJob(jobId) {
+    if (!jobId) return;
+    recoveryJobId = jobId;
+    localStorage.setItem("image-scraper-recovery-job", jobId);
+    $("recover-job-id").value = jobId;
+  }
 
   function lockDashboard(message, configured = true) {
     isAuthenticated = false;
@@ -22,8 +61,9 @@
     isAuthenticated = true;
     $("auth-panel").hidden = true;
     $("logout-button").hidden = false;
+    $("recover-job-id").value = recoveryJobId || activeJobId;
+    applyFormConfig(readLastConfig());
     if (activeJobId) {
-      $("recover-job-id").value = activeJobId;
       $("job-id").textContent = "Job " + activeJobId;
       $("job-panel").hidden = false;
       $("new-job-panel").hidden = true;
@@ -65,19 +105,50 @@
 
   function setButtonState(snapshot) {
     const tasks = snapshot.taskCounts || { pending: snapshot.pendingPages + snapshot.pendingImages, leased: 0 };
-    const partialExportState = ["paused", "budget-paused", "verified"].includes(snapshot.status);
-    const settled = tasks.leased === 0 && snapshot.bytesReserved === 0;
+    const activePermits = Number(snapshot.activePermits || 0);
+    const settled = tasks.leased === 0 && activePermits === 0 && snapshot.bytesReserved === 0;
     const allDone = tasks.pending === 0 && snapshot.pendingPages === 0 && snapshot.pendingImages === 0;
-    const canExport = ["completed", "cancelled"].includes(snapshot.status) ? settled && allDone : partialExportState && settled;
+    const terminal = ["completed", "cancelled", "abandoned", "verified"].includes(snapshot.status);
+    const drained = settled && allDone;
+    const canStartNewAttempt = snapshot.status === "abandoned"
+      ? activePermits === 0 && tasks.leased === 0
+      : terminal && drained;
+    const partialExportState = ["paused", "budget-paused", "verified"].includes(snapshot.status);
+    const canExport = ["completed", "cancelled"].includes(snapshot.status) ? drained : partialExportState && settled;
+    const canClear = snapshot.status === "abandoned"
+      ? activePermits === 0 && tasks.leased === 0
+      : snapshot.verified && allDone && activePermits === 0 && tasks.leased === 0;
     $("pause-button").hidden = snapshot.status !== "running";
-    $("resume-button").hidden = !["paused", "budget-paused", "verified"].includes(snapshot.status);
-    $("cancel-button").disabled = ["completed", "cancelled", "clearing", "clearing_failed", "abandoned"].includes(snapshot.status);
+    $("resume-button").hidden = !["paused", "budget-paused"].includes(snapshot.status) && !(snapshot.status === "verified" && !allDone);
+    $("new-attempt-button").hidden = !canStartNewAttempt;
+    $("cancel-button").hidden = !["running", "paused", "budget-paused"].includes(snapshot.status) && !(snapshot.status === "verified" && !allDone);
     $("manifest-button").disabled = !canExport;
     $("verify-button").disabled = !$("verification-file").files.length || !canExport;
-    $("clear-button").disabled = !(snapshot.status === "abandoned" || (snapshot.verified && allDone && tasks.leased === 0));
+    $("clear-button").disabled = !canClear;
+    $("export-panel").hidden = !canExport && !canClear;
+    $("clear-button").textContent = snapshot.status === "abandoned" ? "Delete abandoned job" : "Clear verified job";
     $("verification-state").textContent = snapshot.verified
-      ? "Attested by local export script. Clear is enabled when all queued work is drained."
-      : "Not attested by the local export script.";
+      ? "Verification accepted."
+      : "Not verified.";
+    const guidance = $("job-guidance");
+    let guidanceText = "";
+    if (snapshot.status === "cancelled") {
+      guidanceText = drained
+        ? "Stopped. Start a new attempt to try again. This job remains available to export."
+        : "Stopped. Waiting for active work to finish.";
+    } else if (snapshot.status === "completed" && snapshot.failedImages > 0) {
+      guidanceText = "Finished with " + snapshot.failedImages.toLocaleString() + " failed image downloads. Start a new attempt to try again.";
+    } else if (snapshot.status === "completed") {
+      guidanceText = "Finished. Export and verify your images before clearing this job.";
+    } else if (snapshot.status === "abandoned") {
+      guidanceText = canClear
+        ? "This job is abandoned. Delete it now or start a new attempt."
+        : "This job is abandoned. Waiting for active work to finish.";
+    } else if (snapshot.status === "verified" && allDone) {
+      guidanceText = "Images verified. You can clear this job or start a new attempt.";
+    }
+    guidance.textContent = guidanceText;
+    guidance.hidden = !guidanceText;
     const countdown = $("retention-countdown");
     if (snapshot.cleanupAt) {
       const remaining = Math.max(0, snapshot.cleanupAt - Date.now());
@@ -126,8 +197,15 @@
     try {
       const snapshot = await api("/api/jobs/" + encodeURIComponent(activeJobId), { method: "GET", headers: {} });
       render(snapshot);
-      const queueDrained = snapshot.pendingPages === 0 && snapshot.pendingImages === 0 && snapshot.bytesReserved === 0;
-      if (snapshot.status === "completed" || (snapshot.status === "cancelled" && queueDrained)) {
+      const queueDrained = snapshot.pendingPages === 0 && snapshot.pendingImages === 0 &&
+        (snapshot.taskCounts?.pending || 0) === 0 && (snapshot.taskCounts?.leased || 0) === 0 &&
+        Number(snapshot.activePermits || 0) === 0 && snapshot.bytesReserved === 0;
+      const noActiveWorkers = Number(snapshot.activePermits || 0) === 0 &&
+        (snapshot.taskCounts?.leased || 0) === 0;
+      const settledSnapshot = snapshot.status === "verified" && noActiveWorkers && snapshot.bytesReserved === 0;
+      const abandonedSettled = snapshot.status === "abandoned" && noActiveWorkers;
+      if (abandonedSettled || settledSnapshot ||
+        (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
       } else {
@@ -175,8 +253,10 @@
     }
     try {
       const snapshot = await api("/api/jobs/" + encodeURIComponent(candidate), { method: "GET", headers: {} });
+      if (activeJobId && activeJobId !== candidate) rememberRecoveryJob(activeJobId);
       activeJobId = candidate;
       localStorage.setItem("image-scraper-active-job", activeJobId);
+      $("recover-job-id").value = recoveryJobId || "";
       $("job-id").textContent = "Job " + activeJobId;
       $("job-panel").hidden = false;
       $("new-job-panel").hidden = true;
@@ -197,20 +277,25 @@
 
   $("job-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const pages = $("pages").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    const config = currentFormConfig();
+    const pages = config.pages.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
     $("start-button").disabled = true;
     $("start-button").textContent = "Starting…";
+    $("start-notice").textContent = "";
+    $("start-notice").className = "notice";
     try {
       const result = await api("/api/jobs", {
         method: "POST",
         body: JSON.stringify({
-          siteUrl: $("site-url").value.trim(),
+          siteUrl: config.siteUrl,
           pages,
-          mode: $("mode").value,
-          concurrency: Number($("concurrency").value),
-          maxDepth: Number($("depth").value)
+          mode: config.mode,
+          concurrency: config.concurrency,
+          maxDepth: config.maxDepth
         })
       });
+      if (activeJobId && activeJobId !== result.jobId && !recoveryJobId) rememberRecoveryJob(activeJobId);
+      localStorage.setItem("image-scraper-last-config", JSON.stringify(config));
       activeJobId = result.jobId;
       localStorage.setItem("image-scraper-active-job", activeJobId);
       $("job-id").textContent = "Job " + activeJobId;
@@ -221,7 +306,8 @@
       notice("Job started.", "success");
       refreshTimer = setTimeout(refresh, 1500);
     } catch (error) {
-      window.alert(error.message || "JOB_START_FAILED");
+      $("start-notice").textContent = error.message || "JOB_START_FAILED";
+      $("start-notice").className = "notice error";
     } finally {
       $("start-button").disabled = false;
       $("start-button").textContent = "Start scraping";
@@ -235,7 +321,18 @@
   $("pause-button").addEventListener("click", () => action("pause"));
   $("resume-button").addEventListener("click", () => action("resume"));
   $("cancel-button").addEventListener("click", () => {
-    if (window.confirm("Stop this job? Already downloaded images will remain available for export.")) action("cancel");
+    if (window.confirm("Stop this job? Downloaded images will remain available for export.")) action("cancel");
+  });
+
+  $("new-attempt-button").addEventListener("click", () => {
+    if (!activeJobId || !currentSnapshot || !["completed", "cancelled", "abandoned"].includes(currentSnapshot.status)) return;
+    rememberRecoveryJob(activeJobId);
+    applyFormConfig(readLastConfig());
+    $("job-panel").hidden = true;
+    $("new-job-panel").hidden = false;
+    $("new-attempt-info").hidden = false;
+    $("new-attempt-info").textContent = "Previous job " + activeJobId + " is still saved. Reopen it above to export or clear it.";
+    window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
   $("manifest-button").addEventListener("click", async () => {
@@ -283,7 +380,8 @@
   });
 
   $("clear-button").addEventListener("click", async () => {
-    if (!activeJobId || !currentSnapshot || !currentSnapshot.verified) return;
+    if (!activeJobId || !currentSnapshot ||
+      (currentSnapshot.status !== "abandoned" && !currentSnapshot.verified)) return;
     if (!window.confirm("Delete all R2 objects for this job and erase its Durable Object state? This cannot be undone.")) return;
     $("clear-button").disabled = true;
     try {
@@ -303,9 +401,12 @@
       $("job-panel").hidden = true;
       $("retention-countdown").hidden = true;
       $("new-job-panel").hidden = false;
-      $("job-form").reset();
-      $("concurrency-value").textContent = "5";
-      $("depth-field").hidden = true;
+      $("recover-job-id").value = recoveryJobId;
+      $("new-attempt-info").hidden = true;
+      $("job-guidance").hidden = true;
+      applyFormConfig(readLastConfig());
+      $("start-notice").textContent = "";
+      $("start-notice").className = "notice";
     } catch (error) {
       notice(error.message || "CLEAR_FAILED", "error");
       if (currentSnapshot) setButtonState(currentSnapshot);

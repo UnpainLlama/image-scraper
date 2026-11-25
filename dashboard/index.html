@@ -13,21 +13,14 @@
 <body>
   <main class="shell">
     <header class="topbar">
-      <div>
-        <p class="eyebrow">PRIVATE CLOUDFLARE TOOL</p>
-        <h1>Image Scraper</h1>
-      </div>
-      <div class="topbar-actions">
-        <span class="private-label">Password protected</span>
-        <button class="secondary" id="logout-button" type="button" hidden>Lock</button>
-      </div>
+      <h1>Image Scraper</h1>
+      <button class="secondary" id="logout-button" type="button" hidden>Log out</button>
     </header>
 
     <section class="panel auth-panel" id="auth-panel">
       <div class="panel-heading">
         <div>
-          <h2>Unlock Image Scraper</h2>
-          <p>Enter the password to continue.</p>
+          <h2>Enter password</h2>
         </div>
       </div>
       <form id="login-form">
@@ -42,17 +35,17 @@
       <div class="panel-heading">
         <div>
           <h2>New job</h2>
-          <p>Collect image files from one website.</p>
         </div>
       </div>
 
       <div class="recovery-row">
-        <label for="recover-job-id">Resume an existing job</label>
+        <label for="recover-job-id">Resume job</label>
         <div class="recovery-controls">
-          <input id="recover-job-id" type="text" maxlength="64" placeholder="Paste job ID" autocomplete="off" spellcheck="false">
-          <button class="secondary" id="recover-button" type="button">Open job</button>
+          <input id="recover-job-id" type="text" maxlength="64" placeholder="Job ID" autocomplete="off" spellcheck="false">
+          <button class="secondary" id="recover-button" type="button">Open</button>
         </div>
       </div>
+      <p class="form-hint" id="new-attempt-info" hidden></p>
 
       <form id="job-form">
         <label for="site-url">Website</label>
@@ -80,24 +73,21 @@
           <input id="depth" name="maxDepth" type="number" min="0" max="10" value="3">
         </div>
 
-        <div class="defaults">
-          <span>Maximum file size <strong>50 MiB</strong></span>
-          <span>Job storage budget <strong>8 GiB</strong></span>
-          <span>Domain delay <strong>1 second minimum</strong></span>
-        </div>
-
         <button class="primary" id="start-button" type="submit">Start scraping</button>
       </form>
+      <p class="notice" id="start-notice" role="status" aria-live="polite"></p>
     </section>
 
     <section class="panel" id="job-panel" hidden>
       <div class="panel-heading">
         <div>
-          <h2>Current job</h2>
+          <h2>Job</h2>
           <p id="job-id"></p>
         </div>
         <span class="status" id="job-status">Initializing</span>
       </div>
+
+      <p class="job-guidance" id="job-guidance" hidden></p>
 
       <div class="metrics">
         <div><strong id="pages-count">0 / 0</strong><span>Pages completed</span></div>
@@ -117,27 +107,25 @@
       <div class="actions">
         <button class="secondary" id="pause-button" type="button">Pause</button>
         <button class="secondary" id="resume-button" type="button" hidden>Resume</button>
-        <button class="danger-outline" id="cancel-button" type="button">Stop job</button>
+        <button class="secondary" id="new-attempt-button" type="button" hidden>New attempt</button>
+        <button class="danger-outline" id="cancel-button" type="button">Stop</button>
       </div>
 
-      <div class="export-panel">
+      <div class="export-panel" id="export-panel">
         <h3>Export and clear</h3>
-        <p>Download the manifest, copy the R2 objects to your computer, verify every file, then clear the cloud job.</p>
+        <p>Export your images and verify them before clearing this job.</p>
         <button class="secondary" id="manifest-button" type="button" disabled>Download manifest</button>
-        <label class="file-label" for="verification-file">Verification report from scripts/verify.sh</label>
+        <label class="file-label" for="verification-file">Verification report</label>
         <input id="verification-file" type="file" accept="application/json,.json">
         <button class="secondary" id="verify-button" type="button" disabled>Submit verification</button>
         <p class="verification-state" id="verification-state">Not attested by the local export script.</p>
-        <p class="verification-disclaimer">The server checks the script report against the manifest totals. This is a local-script attestation, not independent proof of your computer's files.</p>
+        <p class="verification-disclaimer">Verification is reported by the local export script.</p>
         <button class="danger" id="clear-button" type="button" disabled>Clear verified job</button>
       </div>
       <p class="notice" id="job-notice" role="status" aria-live="polite"></p>
       <p class="retention-countdown" id="retention-countdown" hidden></p>
     </section>
 
-    <footer>
-      <p>Images are held temporarily in a private R2 bucket. Job state is isolated per job and removed when clearing succeeds. Cloudflare platform-level operational records are outside this application's control.</p>
-    </footer>
   </main>
 </body>
 </html>
