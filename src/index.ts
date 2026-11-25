@@ -321,8 +321,9 @@ async function buildManifest(env: Env, jobId: string): Promise<Response> {
   const snapshot = await jobSnapshot(env, jobId);
   if (!snapshot) return json({ error: "JOB_NOT_FOUND" }, 404);
   if (!["completed", "cancelled", "paused", "budget-paused", "verified"].includes(snapshot.status) ||
-    snapshot.pendingPages !== 0 || snapshot.pendingImages !== 0 || snapshot.bytesReserved !== 0 ||
-    (snapshot.taskCounts?.pending || 0) !== 0 || (snapshot.taskCounts?.leased || 0) !== 0) {
+    snapshot.bytesReserved !== 0 || (snapshot.taskCounts?.leased || 0) !== 0 ||
+    ((snapshot.status === "completed" || snapshot.status === "cancelled") &&
+      ((snapshot.taskCounts?.pending || 0) !== 0 || snapshot.pendingPages !== 0 || snapshot.pendingImages !== 0))) {
     return json({ error: "JOB_NOT_READY_FOR_EXPORT" }, 409);
   }
   const store = new R2StorageAdapter(env.IMAGES);
