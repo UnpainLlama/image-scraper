@@ -79,7 +79,7 @@ function parseRealbooru(document: Document, base: string): DiscoveryResult {
 function parseElitebabes(document: Document, base: string): DiscoveryResult {
   const output = result();
   const contentImage = (raw: string | null): void => {
-    const url = absolute(raw, base);
+    const url = absolute(raw, "https://cdn.elitebabes.com/");
     if (!url) return;
     const parsed = new URL(url);
     if (!hostMatches(parsed.hostname, "cdn.elitebabes.com") || !parsed.pathname.includes("/content/")) return;
