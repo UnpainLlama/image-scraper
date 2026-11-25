@@ -166,6 +166,7 @@ export class JobDurableObject extends DurableObject<Env> {
   private async snapshot(row: StateRow): Promise<JobSnapshot> {
     const errors = this.ctx.storage.sql.exec("SELECT code, count FROM error_counts ORDER BY code").toArray() as unknown as Array<{ code: string; count: number }>;
     const settings = this.getSettings(row);
+    const activeRows = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM permits WHERE expires_at > ?", Date.now()).toArray() as unknown as Array<{ count: number }>;
     return {
       jobId: row.job_id, status: row.status, createdAt: row.created_at,
       pagesDiscovered: row.pages_discovered, pagesCompleted: row.pages_completed, pendingPages: row.pending_pages,
@@ -173,7 +174,8 @@ export class JobDurableObject extends DurableObject<Env> {
       failedImages: row.failed_images, pendingImages: row.pending_images, bytesStored: row.bytes_stored,
       bytesReserved: row.bytes_reserved, budgetBytes: settings.budgetBytes, concurrency: settings.concurrency,
       verified: row.verified === 1, failedByCode: errors, lastActivityAt: row.last_activity_at,
-      abandonedAt: row.abandoned_at, cleanupAt: row.cleanup_at, taskCounts: this.taskCounts()
+      abandonedAt: row.abandoned_at, cleanupAt: row.cleanup_at, taskCounts: this.taskCounts(),
+      activePermits: Number(activeRows[0]?.count || 0)
     };
   }
 
