@@ -117,7 +117,10 @@ export class JobDurableObject extends DurableObject<Env> {
       const claim = this.ctx.storage.sql.exec("SELECT MIN(lease_until) AS at FROM content_claims WHERE state = 'pending' AND lease_until > ?", now).toArray() as unknown as Array<{ at: number | null }>;
       if (claim[0]?.at) targets.push(Number(claim[0].at));
       if (row.status === "running") {
-        const pending = this.ctx.storage.sql.exec("SELECT MIN(next_attempt_at) AS at FROM tasks WHERE state = 'pending'").toArray() as unknown as Array<{ at: number | null }>;
+        const pending = this.ctx.storage.sql.exec(
+          "SELECT MIN(CASE WHEN next_attempt_at > ? THEN next_attempt_at WHEN enqueued = 1 THEN next_publish_at ELSE ? END) AS at FROM tasks WHERE state = 'pending'",
+          now, now
+        ).toArray() as unknown as Array<{ at: number | null }>;
         if (pending[0]?.at) targets.push(Number(pending[0].at));
       }
     }
