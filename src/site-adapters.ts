@@ -36,7 +36,7 @@ function addPage(output: DiscoveryResult, raw: string | null, base: string): voi
   } catch { /* Ignore malformed links. */ }
 }
 
-function addImage(output: DiscoveryResult, raw: string | null, base: string): void {
+function addImage(output: DiscoveryResult, raw: string | null | undefined, base: string): void {
   const url = absolute(raw, base);
   if (!url || NON_IMAGE.test(new URL(url).pathname) || output.images.length >= MAX_IMAGES) return;
   if (!output.images.some(item => item.url === url)) output.images.push({ url });
