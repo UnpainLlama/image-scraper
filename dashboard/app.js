@@ -133,15 +133,17 @@
     const guidance = $("job-guidance");
     let guidanceText = "";
     if (snapshot.status === "cancelled") {
-      guidanceText = activePermits > 0
-        ? "Stopped. Waiting for active downloads to finish."
-        : "Stopped. Start a new attempt to try again. This job remains available to export.";
+      guidanceText = drained
+        ? "Stopped. Start a new attempt to try again. This job remains available to export."
+        : "Stopped. Waiting for active work to finish.";
     } else if (snapshot.status === "completed" && snapshot.failedImages > 0) {
       guidanceText = "Finished with " + snapshot.failedImages.toLocaleString() + " failed image downloads. Start a new attempt to try again.";
     } else if (snapshot.status === "completed") {
       guidanceText = "Finished. Export and verify your images before clearing this job.";
     } else if (snapshot.status === "abandoned") {
-      guidanceText = "This job is abandoned. Delete it now or start a new attempt.";
+      guidanceText = canClear
+        ? "This job is abandoned. Delete it now or start a new attempt."
+        : "This job is abandoned. Waiting for active work to finish.";
     } else if (snapshot.status === "verified" && allDone) {
       guidanceText = "Images verified. You can clear this job or start a new attempt.";
     }
@@ -402,9 +404,9 @@
       $("recover-job-id").value = recoveryJobId;
       $("new-attempt-info").hidden = true;
       $("job-guidance").hidden = true;
-      $("job-form").reset();
-      $("concurrency-value").textContent = "5";
-      $("depth-field").hidden = true;
+      applyFormConfig(readLastConfig());
+      $("start-notice").textContent = "";
+      $("start-notice").className = "notice";
     } catch (error) {
       notice(error.message || "CLEAR_FAILED", "error");
       if (currentSnapshot) setButtonState(currentSnapshot);
