@@ -271,23 +271,55 @@ export class JobDurableObject extends DurableObject<Env> {
   private async clearJob(): Promise<{ cleared: true; deletedObjects: number; deletedBytes: number; r2PrefixVerifiedEmpty: true }> {
     const row = this.readState();
     if (!row) throw new Error("JOB_NOT_FOUND");
-    const prefix = "jobs/" + row.job_id + "/";
-    let cursor = row.clear_cursor || undefined;
-    try {
-      for (;;) {
-        const page = await this.env.IMAGES.list({ prefix, cursor, limit: 500 });
-        if (page.objects.length) {
-          const keys = page.objects.map(object => object.key);
-          const bytes = page.objects.reduce((sum, object) => sum + object.size, 0);
-          await this.env.IMAGES.delete(keys);
-          this.ctx.storage.sql.exec("UPDATE state SET clear_deleted_objects = clear_deleted_objects + ?, clear_deleted_bytes = clear_deleted_bytes + ?, clear_cursor = ? WHERE id = 1",
-            keys.length, bytes, page.truncated ? page.cursor || null : null);
+    const jobPrefix = "jobs/" + row.job_id + "/";
+    const tempPrefix = "tmp/jobs/" + row.job_id + "/";
+    let phase: "jobs" | "tmp" = "jobs";
+    let cursor: string | undefined;
+    if (row.clear_cursor) {
+      try {
+        const saved = JSON.parse(row.clear_cursor) as { phase?: string; cursor?: string | null };
+        if (saved.phase === "tmp" || saved.phase === "jobs") {
+          phase = saved.phase;
+          cursor = saved.cursor || undefined;
+        } else {
+          cursor = row.clear_cursor;
         }
-        if (!page.truncated) break;
-        cursor = page.cursor || undefined;
+      } catch {
+        cursor = row.clear_cursor;
       }
-      const remaining = await this.env.IMAGES.list({ prefix, limit: 1 });
-      if (remaining.objects.length) throw new Error("R2_PREFIX_NOT_EMPTY");
+    }
+    const saveCursor = (nextPhase: "jobs" | "tmp" | null, nextCursor?: string): void => {
+      const value = nextPhase ? JSON.stringify({ phase: nextPhase, cursor: nextCursor || null }) : null;
+      this.ctx.storage.sql.exec("UPDATE state SET clear_cursor = ? WHERE id = 1", value);
+    };
+    try {
+      for (const currentPhase of ["jobs", "tmp"] as const) {
+        if (currentPhase < phase) continue;
+        const prefix = currentPhase === "jobs" ? jobPrefix : tempPrefix;
+        let pageCursor = currentPhase === phase ? cursor : undefined;
+        for (;;) {
+          const page = await this.env.IMAGES.list({ prefix, cursor: pageCursor, limit: 500 });
+          if (page.objects.length) {
+            const keys = page.objects.map(object => object.key);
+            const bytes = page.objects.reduce((sum, object) => sum + object.size, 0);
+            await this.env.IMAGES.delete(keys);
+            this.ctx.storage.sql.exec(
+              "UPDATE state SET clear_deleted_objects = clear_deleted_objects + ?, clear_deleted_bytes = clear_deleted_bytes + ? WHERE id = 1",
+              keys.length, bytes
+            );
+          }
+          if (page.truncated) {
+            pageCursor = page.cursor || undefined;
+            saveCursor(currentPhase, pageCursor);
+          } else {
+            saveCursor(currentPhase === "jobs" ? "tmp" : null);
+            break;
+          }
+        }
+      }
+      const remainingJobs = await this.env.IMAGES.list({ prefix: jobPrefix, limit: 1 });
+      const remainingTemp = await this.env.IMAGES.list({ prefix: tempPrefix, limit: 1 });
+      if (remainingJobs.objects.length || remainingTemp.objects.length) throw new Error("R2_PREFIX_NOT_EMPTY");
       const final = this.readState();
       const deletedObjects = Number(final?.clear_deleted_objects || 0);
       const deletedBytes = Number(final?.clear_deleted_bytes || 0);
@@ -295,8 +327,10 @@ export class JobDurableObject extends DurableObject<Env> {
       await this.ctx.storage.deleteAll();
       return { cleared: true, deletedObjects, deletedBytes, r2PrefixVerifiedEmpty: true };
     } catch {
-      this.ctx.storage.sql.exec("UPDATE state SET status = 'clearing_failed', clear_cursor = ?, last_activity_at = ? WHERE id = 1",
-        cursor || null, Date.now());
+      this.ctx.storage.sql.exec(
+        "UPDATE state SET status = 'clearing_failed', clear_cursor = ?, last_activity_at = ? WHERE id = 1",
+        JSON.stringify({ phase, cursor: cursor || null }), Date.now()
+      );
       await this.scheduleAlarm(30_000);
       throw new Error("R2_DELETE_FAILED");
     }
