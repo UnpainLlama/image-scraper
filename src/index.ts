@@ -1,4 +1,5 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
+import { verifyAccess } from "./access";
 import { discoverFromHtml, discoverFromCss } from "./discovery";
 import { fetchForJob, validatePublicUrl } from "./security";
 import { imageObjectKey, putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
@@ -221,9 +222,14 @@ async function processPage(message: DiscoveryMessage, env: Env): Promise<void> {
 
 async function reserveBytes(env: Env, jobId: string, permitId: string, bytes: number): Promise<boolean> {
   const response = await jobRequest(env, jobId, "/reserve", { permitId, bytes });
-  if (!response.ok) return false;
-  const result = await response.json() as { allowed: boolean };
-  return result.allowed;
+  if (!response.ok) throw new ScrapeError("BUDGET_RESERVATION_UNAVAILABLE", true, 3);
+  const result = await response.json() as { allowed: boolean; status?: string };
+  if (result.allowed) return true;
+  if (result.status === "paused" || result.status === "initializing") throw new ScrapeError("JOB_PAUSED", true, 60);
+  if (result.status === "cancelled") throw new ScrapeError("JOB_CANCELLED");
+  if (result.status === "budget-paused") throw new ScrapeError("STORAGE_BUDGET_REACHED");
+  if (result.status === "permit-expired") throw new ScrapeError("PERMIT_EXPIRED", true, 3);
+  throw new ScrapeError("BUDGET_RESERVATION_UNAVAILABLE", true, 3);
 }
 
 async function processImage(message: DownloadMessage, env: Env): Promise<boolean> {
@@ -338,8 +344,12 @@ async function processQueueMessage(
     message.ack();
     return;
   }
+  if (snapshot.status === "completed" || snapshot.status === "clearing") {
+    message.ack();
+    return;
+  }
   if (snapshot.status !== "running") {
-    message.retry({ delaySeconds: 60 });
+    message.retry({ delaySeconds: snapshot.status === "initializing" ? 1 : 900 });
     return;
   }
 
@@ -420,7 +430,7 @@ async function buildManifest(env: Env, jobId: string): Promise<Response> {
   let cursor: string | undefined;
   let bytes = 0;
   do {
-    const page = await store.list({ prefix, cursor, limit: 1000 });
+    const page = await store.list({ prefix, cursor, limit: 1000, include: ["customMetadata", "httpMetadata"] });
     for (const object of page.objects) {
       if (object.key.includes("/.tmp/")) continue;
       const sha = object.customMetadata?.sha256 || "";
@@ -460,7 +470,7 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
 
   const match = path.match(/^\/api\/jobs\/([a-z0-9-]{16,64})(?:\/(pause|resume|cancel|manifest|verify|clear))?$/);
   if (!match) return json({ error: "NOT_FOUND" }, 404);
-  const jobId = match[1];
+  const jobId = match[1]!;
   const action = match[2] || "";
 
   if (action === "" && request.method === "GET") {
@@ -493,6 +503,8 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const denied = await verifyAccess(request, env);
+    if (denied) return denied;
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) {
       try {
