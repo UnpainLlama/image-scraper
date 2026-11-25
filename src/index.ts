@@ -1,6 +1,7 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
 import { handleAuthRoute, isAuthenticated } from "./auth";
 import { discoverFromHtml, discoverFromCss } from "./discovery";
+import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl } from "./site-adapters";
 import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, validatePublicUrl } from "./security";
 import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
 import type { Env, JobMode, JobSettings, JobSnapshot, QueuePayload, StoredTaskPayload } from "./types";
@@ -185,24 +186,44 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
   if (!settingsResponse.ok) throw new ScrapeError("JOB_STATE_UNAVAILABLE", true, 3);
   const settings = await settingsResponse.json() as JobSettings;
   const pageUrl = validatePublicUrl(payload.url, settings.allowedOrigin).toString();
-  const fetched = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.2" }, settings.allowedOrigin);
-  let html = "";
-  try {
-    if (fetched.response.status === 429 || fetched.response.status >= 500) {
-      throw new ScrapeError("PAGE_HTTP_" + fetched.response.status, true, parseRetryAfter(fetched.response.headers.get("retry-after")));
+  let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[] };
+  if (isSexComUrl(pageUrl)) {
+    discovered = await discoverSexComApiPage(pageUrl, async apiUrl => {
+      const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" }, "https://www.sex.com");
+      try {
+        if (api.response.status === 429 || api.response.status >= 500) {
+          throw new ScrapeError("PAGE_HTTP_" + api.response.status, true, parseRetryAfter(api.response.headers.get("retry-after")));
+        }
+        if (!api.response.ok) throw new ScrapeError("PAGE_HTTP_" + api.response.status);
+        const contentType = api.response.headers.get("content-type") || "";
+        if (contentType && !contentType.includes("application/json") && !contentType.includes("text/plain")) {
+          throw new ScrapeError("SEXCOM_API_NOT_JSON");
+        }
+        return await readLimitedText(api.response, 2_500_000);
+      } finally { await api.release(); }
+    });
+  } else {
+    const fetched = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.2" }, settings.allowedOrigin);
+    const resolvedPageUrl = fetched.finalUrl.toString();
+    let html = "";
+    try {
+      if (fetched.response.status === 429 || fetched.response.status >= 500) {
+        throw new ScrapeError("PAGE_HTTP_" + fetched.response.status, true, parseRetryAfter(fetched.response.headers.get("retry-after")));
+      }
+      if (!fetched.response.ok) throw new ScrapeError("PAGE_HTTP_" + fetched.response.status);
+      const contentType = fetched.response.headers.get("content-type") || "";
+      if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) throw new ScrapeError("PAGE_NOT_HTML");
+      html = await readLimitedText(fetched.response, 2_500_000);
+    } finally { await fetched.release(); }
+
+    if (looksJavaScriptRendered(html)) {
+      const rendered = await fetchRenderedHtml(env, jobId, resolvedPageUrl, settings.allowedOrigin);
+      if (rendered) html = rendered;
     }
-    if (!fetched.response.ok) throw new ScrapeError("PAGE_HTTP_" + fetched.response.status);
-    const contentType = fetched.response.headers.get("content-type") || "";
-    if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) throw new ScrapeError("PAGE_NOT_HTML");
-    html = await readLimitedText(fetched.response, 2_500_000);
-  } finally { await fetched.release(); }
 
-  if (looksJavaScriptRendered(html)) {
-    const rendered = await fetchRenderedHtml(env, jobId, fetched.finalUrl.toString(), settings.allowedOrigin);
-    if (rendered) html = rendered;
+    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl) ||
+      discoverFromHtml(html, resolvedPageUrl, settings.maxImagesPerPage || 2000, 2000);
   }
-
-  const discovered = discoverFromHtml(html, fetched.finalUrl.toString(), settings.maxImagesPerPage || 2000, 2000);
   const allImages = [...discovered.images];
   for (const stylesheetUrl of discovered.stylesheets.slice(0, 20)) {
     const css = await fetchStylesheet(env, jobId, stylesheetUrl);

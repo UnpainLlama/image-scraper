@@ -13,6 +13,18 @@ A private Cloudflare-hosted image collection tool. It discovers image files on s
 7. Verifies file sizes and SHA-256 hashes before enabling Clear.
 8. Deletes the R2 job prefix and erases the job Durable Object state.
 
+## Site-specific discovery
+
+The scraper automatically selects an image-only adapter for these supported hosts:
+
+- **Sex.com** — paginated JSON GIF listings, search, and tag results.
+- **Rule34.xxx** — tag/list pages, sample image URLs, and post-page links.
+- **Realbooru.com** — list pagination and original image URLs from image posts.
+- **Elitebabes.com** — gallery listings and full-size gallery images.
+- **Buondua.com** — album listings, album images, and album pagination.
+
+Use **Crawl** mode when starting from a listing page that links to galleries, posts, albums, or additional listing pages. Exact mode processes only the supplied seed page. These adapters do not add video discovery or downloading. Site layouts and APIs can change, so live behavior may differ from the fixture tests.
+
 ## Design rules
 
 - Image files only. No text/article extraction or website archiving.
