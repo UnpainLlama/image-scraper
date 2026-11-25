@@ -63,11 +63,11 @@ describe("Durable Object task and storage lifecycle", () => {
 
     const registered = await request(stub, "/register-pages", { items: [parent] });
     expect((await registered.json() as { items: Array<{ result: string }> }).items[0]?.result).toBe("accepted");
-    await request(stub, "/start");
+    await request(stub, "/start", {});
 
     const lease = await request(stub, "/task/lease", { taskId: parentId });
     expect((await lease.json() as { result: string }).result).toBe("leased");
-    await request(stub, "/pause");
+    await request(stub, "/pause", {});
 
     const image = task(hash("c"), hash("d"), "https://example.com/image.png");
     const child = task(hash("e"), hash("f"), "https://example.com/gallery", 1);
@@ -97,7 +97,7 @@ describe("Durable Object task and storage lifecycle", () => {
     await request(stub, "/register-pages", {
       items: [task(taskId, hash("2"), "https://example.com/lease")]
     });
-    await request(stub, "/start");
+    await request(stub, "/start", {});
     const lease = await request(stub, "/task/lease", { taskId });
     expect((await lease.json() as { result: string }).result).toBe("leased");
 
@@ -118,7 +118,7 @@ describe("Durable Object task and storage lifecycle", () => {
 
   it("recovers an image claim after a crash between final copy and commit", async () => {
     const { jobId, stub } = await createJob();
-    await request(stub, "/start");
+    await request(stub, "/start", {});
     const sha = hash("3");
     const firstTask = hash("4");
     const secondTask = hash("5");
@@ -173,7 +173,7 @@ describe("Durable Object task and storage lifecycle", () => {
 
   it("reconciles R2 objects and clears the job and Durable Object state", async () => {
     const { jobId, stub } = await createJob();
-    await request(stub, "/start");
+    await request(stub, "/start", {});
 
     const sha = hash("7");
     const finalKey = "jobs/" + jobId + "/objects/" + sha + ".png";
