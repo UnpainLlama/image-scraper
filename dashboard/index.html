@@ -75,6 +75,7 @@
 
         <button class="primary" id="start-button" type="submit">Start scraping</button>
       </form>
+      <p class="notice" id="start-notice" role="status" aria-live="polite"></p>
     </section>
 
     <section class="panel" id="job-panel" hidden>
@@ -110,7 +111,7 @@
         <button class="danger-outline" id="cancel-button" type="button">Stop</button>
       </div>
 
-      <div class="export-panel">
+      <div class="export-panel" id="export-panel">
         <h3>Export and clear</h3>
         <p>Export your images and verify them before clearing this job.</p>
         <button class="secondary" id="manifest-button" type="button" disabled>Download manifest</button>
