@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRobotsAllowed, parseRobots, validatePublicUrl } from "../src/security";
+import { isRobotsAllowed, parseRobots, readRobotsResponse, validatePublicUrl } from "../src/security";
 
 describe("URL safety", () => {
   it("accepts public HTTP and HTTPS URLs", () => {
@@ -25,5 +25,37 @@ describe("robots policy", () => {
 
   it("reads crawl-delay", () => {
     expect(parseRobots("User-agent: *\nCrawl-delay: 2").crawlDelayMs).toBe(2000);
+  });
+
+  it("cancels a non-success robots response without consuming it", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() { cancelled = true; }
+    });
+    expect(await readRobotsResponse(new Response(body, { status: 404 }))).toBeNull();
+    expect(cancelled).toBe(true);
+  });
+
+  it("enforces the Content-Length robots cap and cancels the body", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1, 2])); },
+      cancel() { cancelled = true; }
+    });
+    await expect(readRobotsResponse(new Response(body, {
+      status: 200,
+      headers: { "content-length": "100" }
+    }), 10)).rejects.toThrow("ROBOTS_TOO_LARGE");
+    expect(cancelled).toBe(true);
+  });
+
+  it("enforces the streamed robots cap when Content-Length is absent", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array([1, 2, 3, 4, 5, 6])); },
+      cancel() { cancelled = true; }
+    });
+    await expect(readRobotsResponse(new Response(body), 5)).rejects.toThrow("ROBOTS_TOO_LARGE");
+    expect(cancelled).toBe(true);
   });
 });
