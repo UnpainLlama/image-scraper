@@ -204,6 +204,7 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
     });
   } else {
     const fetched = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.2" }, settings.allowedOrigin);
+    const resolvedPageUrl = fetched.finalUrl.toString();
     let html = "";
     try {
       if (fetched.response.status === 429 || fetched.response.status >= 500) {
@@ -216,12 +217,12 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
     } finally { await fetched.release(); }
 
     if (looksJavaScriptRendered(html)) {
-      const rendered = await fetchRenderedHtml(env, jobId, pageUrl, settings.allowedOrigin);
+      const rendered = await fetchRenderedHtml(env, jobId, resolvedPageUrl, settings.allowedOrigin);
       if (rendered) html = rendered;
     }
 
-    discovered = discoverSiteSpecificHtml(html, pageUrl) ||
-      discoverFromHtml(html, pageUrl, settings.maxImagesPerPage || 2000, 2000);
+    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl) ||
+      discoverFromHtml(html, resolvedPageUrl, settings.maxImagesPerPage || 2000, 2000);
   }
   const allImages = [...discovered.images];
   for (const stylesheetUrl of discovered.stylesheets.slice(0, 20)) {
