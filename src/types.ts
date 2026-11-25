@@ -1,5 +1,5 @@
 export type JobMode = "exact" | "crawl";
-export type JobStatus = "initializing" | "running" | "paused" | "budget-paused" | "completed" | "cancelled" | "clearing";
+export type JobStatus = "initializing" | "running" | "paused" | "budget-paused" | "completed" | "cancelled" | "verified" | "abandoned" | "clearing" | "clearing_failed";
 export interface JobSettings {
   allowedOrigin: string;
   mode: JobMode;
@@ -9,17 +9,25 @@ export interface JobSettings {
   maxFileBytes: number;
   budgetBytes: number;
   perDomainDelayMs: number;
+  maxImagesPerPage?: number;
+  maxImagesPerJob?: number;
 }
-export interface DiscoveryMessage { jobId: string; pageUrl: string; depth: number; taskId: string; }
-export interface DownloadMessage { jobId: string; imageUrl: string; taskId: string; }
-export type QueuePayload = DiscoveryMessage | DownloadMessage;
-export interface BrowserRunBinding { quickAction(action: "content", options: { url: string }): Promise<Response>; }
+export interface QueuePayload { jobId: string; taskId: string; }
+export interface StoredTaskPayload { url: string; depth?: number; }
+export interface BrowserRunBinding {
+  quickAction(action: "content", options: {
+    url: string;
+    allowRequestPattern?: string[];
+    rejectRequestPattern?: string[];
+    gotoOptions?: { waitUntil?: "load" | "domcontentloaded" | "networkidle0" | "networkidle2"; timeout?: number };
+  }): Promise<Response>;
+}
 export interface Env {
   ASSETS: Fetcher;
   JOBS: DurableObjectNamespace;
   IMAGES: R2Bucket;
-  DISCOVERY_QUEUE: Queue<DiscoveryMessage>;
-  DOWNLOAD_QUEUE: Queue<DownloadMessage>;
+  DISCOVERY_QUEUE: Queue<QueuePayload>;
+  DOWNLOAD_QUEUE: Queue<QueuePayload>;
   BROWSER: BrowserRunBinding;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
@@ -42,6 +50,10 @@ export interface JobSnapshot {
   concurrency: number;
   verified: boolean;
   failedByCode: Array<{ code: string; count: number }>;
+  lastActivityAt?: number;
+  abandonedAt?: number | null;
+  cleanupAt?: number | null;
+  taskCounts?: { pending: number; leased: number; done: number; failed: number };
 }
 export interface FetchResult { response: Response; finalUrl: URL; permitId: string; release: () => Promise<void>; }
 export interface RobotsPolicy { rules: Array<{ allow: boolean; path: string }>; crawlDelayMs: number; }
