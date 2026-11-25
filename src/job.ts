@@ -399,7 +399,7 @@ export class JobDurableObject extends DurableObject<Env> {
           await this.updateCompletion();
           return json({ result: outcome, state: "failed" });
         }
-        const seconds = Math.min(900, Math.max(1, Number(body.delaySeconds || Math.min(300, 2 ** Number(tasks[0]!.attempt_count))));
+        const seconds = Math.min(900, Math.max(1, Number(body.delaySeconds || Math.min(300, 2 ** Number(tasks[0]!.attempt_count)))));
         const next = Date.now() + seconds * 1000;
         this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ?, error_code = ? WHERE task_id = ?",
           next, code, body.taskId);
