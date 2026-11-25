@@ -189,7 +189,7 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
   let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[] };
   if (isSexComUrl(pageUrl)) {
     discovered = await discoverSexComApiPage(pageUrl, async apiUrl => {
-      const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" });
+      const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" }, "https://www.sex.com");
       try {
         if (api.response.status === 429 || api.response.status >= 500) {
           throw new ScrapeError("PAGE_HTTP_" + api.response.status, true, parseRetryAfter(api.response.headers.get("retry-after")));
