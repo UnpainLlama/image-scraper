@@ -40,7 +40,9 @@ export async function verifySessionToken(token: string, secret: string, now = Da
   const parts = token.split(".");
   if (parts.length !== 2) return false;
   try {
-    const signature = decodeBase64Url(parts[1]!);
+    const signatureBytes = decodeBase64Url(parts[1]!);
+    const signature = new ArrayBuffer(signatureBytes.byteLength);
+    new Uint8Array(signature).set(signatureBytes);
     const key = await importSessionKey(secret);
     const valid = await crypto.subtle.verify("HMAC", key, signature, encoder.encode(parts[0]!));
     if (!valid) return false;
