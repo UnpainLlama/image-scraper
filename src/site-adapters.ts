@@ -52,6 +52,9 @@ function parseRule34(document: Document, base: string): DiscoveryResult {
     const sample = thumb.replace("/thumbnails/", "/samples/").replace("thumbnail_", "sample_");
     addImage(output, sample, base);
   }
+  for (const anchor of Array.from(document.querySelectorAll('a[href*="pid="]'))) {
+    addPage(output, anchor.getAttribute("href"), base);
+  }
   return output;
 }
 
@@ -64,6 +67,9 @@ function parseRealbooru(document: Document, base: string): DiscoveryResult {
     addImage(output, image?.getAttribute("src") || image?.getAttribute("data-src"), base);
   } else {
     for (const anchor of Array.from(document.querySelectorAll('a[href*="s=view"][href*="id="]'))) {
+      addPage(output, anchor.getAttribute("href"), base);
+    }
+    for (const anchor of Array.from(document.querySelectorAll('a[href*="pid="]'))) {
       addPage(output, anchor.getAttribute("href"), base);
     }
   }
@@ -86,6 +92,9 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
     for (const item of listItems) {
       const anchor = item.querySelector("a[href]");
       addPage(output, anchor?.getAttribute("href") || null, base);
+    }
+    for (const anchor of Array.from(document.querySelectorAll('a[href*="/page/"]'))) {
+      addPage(output, anchor.getAttribute("href"), base);
     }
     return output;
   }
