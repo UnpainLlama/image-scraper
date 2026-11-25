@@ -31,6 +31,26 @@ async function jobSnapshot(env: Env, jobId: string): Promise<JobSnapshot | null>
   return await response.json() as JobSnapshot;
 }
 
+async function clearOrphanedPrefixes(env: Env, jobId: string): Promise<{ cleared: true; deletedObjects: number; deletedBytes: number; r2PrefixVerifiedEmpty: true; deletedJobState: true }> {
+  let deletedObjects = 0;
+  let deletedBytes = 0;
+  for (const prefix of ["jobs/" + jobId + "/", "tmp/jobs/" + jobId + "/"]) {
+    let cursor: string | undefined;
+    do {
+      const page = await env.IMAGES.list({ prefix, cursor, limit: 500 });
+      if (page.objects.length) {
+        await env.IMAGES.delete(page.objects.map(object => object.key));
+        deletedObjects += page.objects.length;
+        deletedBytes += page.objects.reduce((total, object) => total + object.size, 0);
+      }
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    const remaining = await env.IMAGES.list({ prefix, limit: 1 });
+    if (remaining.objects.length) throw new ScrapeError("R2_PREFIX_NOT_EMPTY", true, 3);
+  }
+  return { cleared: true, deletedObjects, deletedBytes, r2PrefixVerifiedEmpty: true, deletedJobState: true };
+}
+
 async function reconcileStorage(env: Env, jobId: string): Promise<void> {
   const start = await jobRequest(env, jobId, "/storage/reconcile/start", {});
   if (!start.ok) throw new ScrapeError("STORAGE_RECONCILE_UNAVAILABLE", true, 3);
@@ -408,7 +428,10 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
   }
   if (action === "clear" && request.method === "POST") {
     const snapshot = await jobSnapshot(env, jobId);
-    if (!snapshot) return json({ error: "JOB_NOT_FOUND" }, 404);
+    if (!snapshot) {
+      const receipt = await clearOrphanedPrefixes(env, jobId);
+      return json(receipt);
+    }
     if (!["abandoned", "clearing", "clearing_failed"].includes(snapshot.status)) {
       await reconcileStorage(env, jobId);
     }
