@@ -39,7 +39,7 @@ The Free plan fixes message retention at 24 hours. On a plan where retention is 
     npx wrangler queues update image-scraper-discovery --message-retention-period-secs 86400
     npx wrangler queues update image-scraper-download --message-retention-period-secs 86400
 
-There is no dead-letter queue by default. Queue messages contain the temporary page or image URLs required to perform the job. They are acknowledged after processing and are removed after the retention window if they are not processed. A paused job must be resumed or cancelled before its queued messages expire.
+There is no dead-letter queue by default. Queue messages contain the temporary page or image URLs required to perform the job. They are acknowledged after processing and are removed after the retention window if they are not processed. Paused messages are retried with a 15-minute delay; resume or cancel a paused job within the 24-hour retention window.
 
 Consumer-level concurrency is capped at 50 invocations per queue in Wrangler. A separate Durable Object enforces each job's configured concurrency (1–20) and per-domain delay.
 
@@ -64,9 +64,16 @@ Protect the complete Worker hostname, not only the dashboard route. The policy m
 - /api/jobs
 - /api/jobs/*
 
-Create an Access application for the deployed Worker hostname and allow only your intended account. Confirm the policy blocks an unauthenticated request to both the dashboard and an API endpoint. Do not leave a public bypass hostname enabled. If your account cannot apply Access to the workers.dev hostname, disable that public hostname and use a hostname/route that is protected by Access.
+Create an Access application for the deployed Worker hostname and allow only your intended account. Confirm the policy blocks an unauthenticated request to both the dashboard and an API endpoint. Do not leave a public bypass hostname enabled.
 
-The app has no second login system. Its security boundary is Cloudflare Access.
+The Worker also verifies the Access JWT itself. Set the following Worker secrets using the Access application audience tag and your Zero Trust team domain (hostname only, without https://):
+
+    npx wrangler secret put ACCESS_TEAM_DOMAIN
+    npx wrangler secret put ACCESS_AUD
+
+Requests without a valid Cloudflare Access assertion, or when either setting is missing, are rejected. The Access JWT is checked against Cloudflare's published signing keys, issuer and configured audience. Create the Access application before deploying or the dashboard will correctly remain unavailable.
+
+The app has no second login system. Its security boundary is Cloudflare Access plus Worker-side JWT verification.
 
 ## 6. Export credentials
 
@@ -81,7 +88,7 @@ Set these environment variables before running scripts/export.sh:
 - JOB_ID
 - DEST_DIR
 
-The manifest is downloaded from the dashboard and is not stored by the Worker. After export:
+The manifest is downloaded from the dashboard and is not stored by the Worker. Save it locally in the project working directory as manifest-JOB_ID.json. After export:
 
     scripts/verify.sh manifest-JOB_ID.json ./image-export > verification-report.json
 
