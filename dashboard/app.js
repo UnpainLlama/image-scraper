@@ -108,21 +108,24 @@
     const activePermits = Number(snapshot.activePermits || 0);
     const settled = tasks.leased === 0 && activePermits === 0 && snapshot.bytesReserved === 0;
     const allDone = tasks.pending === 0 && snapshot.pendingPages === 0 && snapshot.pendingImages === 0;
-    const terminal = ["completed", "cancelled", "abandoned"].includes(snapshot.status);
+    const terminal = ["completed", "cancelled", "abandoned", "verified"].includes(snapshot.status);
     const drained = settled && allDone;
     const canStartNewAttempt = snapshot.status === "abandoned"
       ? activePermits === 0 && tasks.leased === 0
       : terminal && drained;
     const partialExportState = ["paused", "budget-paused", "verified"].includes(snapshot.status);
     const canExport = ["completed", "cancelled"].includes(snapshot.status) ? drained : partialExportState && settled;
+    const canClear = snapshot.status === "abandoned"
+      ? activePermits === 0 && tasks.leased === 0
+      : snapshot.verified && allDone && activePermits === 0 && tasks.leased === 0;
     $("pause-button").hidden = snapshot.status !== "running";
-    $("resume-button").hidden = !["paused", "budget-paused", "verified"].includes(snapshot.status);
+    $("resume-button").hidden = !["paused", "budget-paused"].includes(snapshot.status) && !(snapshot.status === "verified" && !allDone);
     $("new-attempt-button").hidden = !canStartNewAttempt;
-    $("cancel-button").disabled = ["completed", "cancelled", "clearing", "clearing_failed", "abandoned"].includes(snapshot.status);
+    $("cancel-button").hidden = !["running", "paused", "budget-paused"].includes(snapshot.status) && !(snapshot.status === "verified" && !allDone);
     $("manifest-button").disabled = !canExport;
     $("verify-button").disabled = !$("verification-file").files.length || !canExport;
-    $("clear-button").disabled = !(snapshot.status === "abandoned" ? activePermits === 0 && tasks.leased === 0 :
-      snapshot.verified && allDone && activePermits === 0 && tasks.leased === 0);
+    $("clear-button").disabled = !canClear;
+    $("export-panel").hidden = !canExport && !canClear;
     $("clear-button").textContent = snapshot.status === "abandoned" ? "Delete abandoned job" : "Clear verified job";
     $("verification-state").textContent = snapshot.verified
       ? "Verification accepted."
@@ -139,6 +142,8 @@
       guidanceText = "Finished. Export and verify your images before clearing this job.";
     } else if (snapshot.status === "abandoned") {
       guidanceText = "This job is abandoned. Delete it now or start a new attempt.";
+    } else if (snapshot.status === "verified" && allDone) {
+      guidanceText = "Images verified. You can clear this job or start a new attempt.";
     }
     guidance.textContent = guidanceText;
     guidance.hidden = !guidanceText;
@@ -193,7 +198,12 @@
       const queueDrained = snapshot.pendingPages === 0 && snapshot.pendingImages === 0 &&
         (snapshot.taskCounts?.pending || 0) === 0 && (snapshot.taskCounts?.leased || 0) === 0 &&
         Number(snapshot.activePermits || 0) === 0 && snapshot.bytesReserved === 0;
-      if (snapshot.status === "abandoned" || (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
+      const settledSnapshot = snapshot.status === "verified" &&
+        Number(snapshot.activePermits || 0) === 0 && (snapshot.taskCounts?.leased || 0) === 0 &&
+        snapshot.bytesReserved === 0;
+      if (snapshot.status === "abandoned" || (snapshot.status === "verified" && Number(snapshot.activePermits || 0) === 0 &&
+        (snapshot.taskCounts?.leased || 0) === 0 && snapshot.bytesReserved === 0) ||
+        (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
       } else {
