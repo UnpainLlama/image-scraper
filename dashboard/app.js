@@ -110,11 +110,14 @@
     const allDone = tasks.pending === 0 && snapshot.pendingPages === 0 && snapshot.pendingImages === 0;
     const terminal = ["completed", "cancelled", "abandoned"].includes(snapshot.status);
     const drained = settled && allDone;
+    const canStartNewAttempt = snapshot.status === "abandoned"
+      ? activePermits === 0 && tasks.leased === 0
+      : terminal && drained;
     const partialExportState = ["paused", "budget-paused", "verified"].includes(snapshot.status);
     const canExport = ["completed", "cancelled"].includes(snapshot.status) ? drained : partialExportState && settled;
     $("pause-button").hidden = snapshot.status !== "running";
     $("resume-button").hidden = !["paused", "budget-paused", "verified"].includes(snapshot.status);
-    $("new-attempt-button").hidden = !(terminal && drained);
+    $("new-attempt-button").hidden = !canStartNewAttempt;
     $("cancel-button").disabled = ["completed", "cancelled", "clearing", "clearing_failed", "abandoned"].includes(snapshot.status);
     $("manifest-button").disabled = !canExport;
     $("verify-button").disabled = !$("verification-file").files.length || !canExport;
