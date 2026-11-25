@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
@@ -16,8 +17,9 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261125.1",
+    "@cloudflare/vitest-plugin": "^1.9.2",
     "typescript": "^5.8.3",
-    "vitest": "^3.1.2",
+    "vitest": "^4.1.0",
     "wrangler": "^4.30.0"
   }
 }
