@@ -70,3 +70,22 @@ footer p { font-size: 11px; }
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .actions { flex-wrap: wrap; }
 }
+.recovery-row {
+  margin: 0 0 1.4rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.025);
+}
+.recovery-row label { display: block; margin: 0 0 .65rem; }
+.recovery-controls { display: flex; gap: .65rem; }
+.recovery-controls input { flex: 1; min-width: 0; }
+.verification-disclaimer, .retention-countdown {
+  color: var(--muted);
+  font-size: .82rem;
+  line-height: 1.5;
+}
+.retention-countdown { margin-top: .75rem; }
+@media (max-width: 540px) {
+  .recovery-controls { flex-direction: column; }
+}
