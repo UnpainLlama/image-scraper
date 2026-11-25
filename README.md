@@ -18,7 +18,7 @@ A private Cloudflare-hosted image collection tool. It discovers image files on s
 - Image files only. No text/article extraction or website archiving.
 - No conversion, resizing, recompression, or re-encoding.
 - No D1 database and no permanent job history.
-- No full image URLs are persisted in Durable Object state or application error summaries. Queue messages necessarily hold URLs temporarily while work is pending.
+- Task URLs and depth are stored in the per-job Durable Object until completion and job clear. Queue messages contain only job IDs and task IDs. URLs, filenames and R2 keys are never written to application logs.
 - Per-job state is isolated in a SQLite-backed Durable Object.
 - R2 is private and is the only image storage backend.
 - GitHub stores application code only; there is no GitHub image mirror.
@@ -36,8 +36,10 @@ A private Cloudflare-hosted image collection tool. It discovers image files on s
 | Maximum pages | 500 |
 | Maximum seed pages | 50 |
 | Maximum discovered images | 50,000 |
-| Queue retention | 24 hours |
-| Abandoned-object lifecycle | 7 days |
+| Queue retention | 14 days (Paid; Free is fixed at 24 hours) |
+| Job abandonment threshold | 30 days idle |
+| Abandonment grace period | 7 days |
+| Temporary object expiry | 1 day (`tmp/` only) |
 
 ## Quick start
 
@@ -67,11 +69,11 @@ Upload verification-report.json in the dashboard. Clear is enabled only after th
 
 ## Important limits
 
-- Queue messages temporarily contain the page or image URL needed by a consumer. They are acknowledged when work completes and are subject to the configured queue retention period.
-- A job paused longer than the queue retention period may lose queued work. Resume or cancel paused jobs before queue messages expire.
+- Queue messages contain only `{ jobId, taskId }`. The per-job Durable Object stores the task URL and depth and is the source of truth.
+- Paused queue hints are acknowledged. On resume, pending tasks are republished. The alarm reconciler republishes tasks whose queue hint was lost/exhausted or whose worker lease expired; retention is no longer the task store.
 - The application blocks local hostnames, IP-literal URLs, unusual ports, and unsafe redirect destinations. DNS resolution is performed by the Cloudflare runtime; this application does not implement a separate DNS pinning resolver.
 - Browser Run is used only as a fallback for pages that appear JavaScript-rendered. A website can still change behavior after rendering; the scraper does not bypass logins, CAPTCHAs, paywalls, or access controls.
-- R2 lifecycle expiration is a safety net for abandoned jobs, not an exact deletion timer. Cloudflare states that lifecycle deletions typically complete within 24 hours of the expiration time.
+- Completed job objects have no blanket lifecycle expiry. The Durable Object marks jobs abandoned after 30 days without user action or task progress, shows a 7-day grace period, then runs resumable Clear. This is the only automatic deletion of final job objects. Only `tmp/` objects expire automatically after one day; R2 lifecycle deletion is not immediate.
 - Clearing removes application job data. It cannot erase Cloudflare platform-level Access, request, billing, or operational records, nor logs held by the target website.
 
 ## License
