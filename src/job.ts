@@ -272,7 +272,7 @@ export class JobDurableObject extends DurableObject<Env> {
           this.ctx.storage.sql.exec("UPDATE state SET status = 'budget-paused' WHERE id = 1");
           return json({ allowed: false, status: "budget-paused" });
         }
-        this.ctx.storage.sql.exec("INSERT INTO reservations (permit_id, bytes, expires_at) VALUES (?, ?, ?) ON CONFLICT(permit_id) DO UPDATE SET bytes = bytes + excluded.bytes, expires_at = excluded.expires_at", body.permitId, amount, Number(active[0].expires_at));
+        this.ctx.storage.sql.exec("INSERT INTO reservations (permit_id, bytes, expires_at) VALUES (?, ?, ?) ON CONFLICT(permit_id) DO UPDATE SET bytes = bytes + excluded.bytes, expires_at = excluded.expires_at", body.permitId, amount, Number(active[0]?.expires_at || 0));
         this.ctx.storage.sql.exec("UPDATE state SET bytes_reserved = bytes_reserved + ? WHERE id = 1", amount);
         return json({ allowed: true });
       }
