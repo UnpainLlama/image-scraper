@@ -52,7 +52,8 @@ async function clearOrphanedPrefixes(env: Env, jobId: string): Promise<{ cleared
 }
 
 async function reconcileStorage(env: Env, jobId: string): Promise<void> {
-  const start = await jobRequest(env, jobId, "/storage/reconcile/start", {});
+  const token = crypto.randomUUID();
+  const start = await jobRequest(env, jobId, "/storage/reconcile/start", { token });
   if (!start.ok) throw new ScrapeError("STORAGE_RECONCILE_UNAVAILABLE", true, 3);
   const startResult = await start.json() as { result: string };
   if (startResult.result !== "accepted") throw new ScrapeError("STORAGE_RECONCILE_REJECTED");
@@ -61,7 +62,7 @@ async function reconcileStorage(env: Env, jobId: string): Promise<void> {
   let batch: Array<{ sha256: string; key: string; size: number }> = [];
   const publish = async (): Promise<void> => {
     if (!batch.length) return;
-    const response = await jobRequest(env, jobId, "/storage/reconcile/batch", { items: batch });
+    const response = await jobRequest(env, jobId, "/storage/reconcile/batch", { token, items: batch });
     if (!response.ok) throw new ScrapeError("STORAGE_RECONCILE_BATCH_FAILED", true, 3);
     const result = await response.json() as { result: string };
     if (result.result !== "accepted") throw new ScrapeError("STORAGE_RECONCILE_BATCH_REJECTED");
@@ -78,7 +79,7 @@ async function reconcileStorage(env: Env, jobId: string): Promise<void> {
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
   await publish();
-  const finish = await jobRequest(env, jobId, "/storage/reconcile/finish", {});
+  const finish = await jobRequest(env, jobId, "/storage/reconcile/finish", { token });
   if (!finish.ok) throw new ScrapeError("STORAGE_RECONCILE_FINISH_FAILED", true, 3);
   const finished = await finish.json() as { result: string };
   if (finished.result !== "reconciled") throw new ScrapeError("STORAGE_RECONCILE_UNCONFIRMED");
