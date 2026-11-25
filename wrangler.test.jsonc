@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "image-scraper-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "./dashboard", "binding": "ASSETS" },
+  "r2_buckets": [
+    { "binding": "IMAGES", "bucket_name": "image-scraper-test" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "JOBS", "class_name": "JobDurableObject" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["JobDurableObject"] }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "DISCOVERY_QUEUE", "queue": "image-scraper-test-discovery" },
+      { "binding": "DOWNLOAD_QUEUE", "queue": "image-scraper-test-download" }
+    ]
+  }
+}
