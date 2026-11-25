@@ -72,6 +72,7 @@ export class JobDurableObject extends DurableObject<Env> {
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS reservations (permit_id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, expires_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS domain_limits (domain TEXT PRIMARY KEY, next_allowed_at INTEGER NOT NULL)");
     this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS error_counts (code TEXT PRIMARY KEY, count INTEGER NOT NULL)");
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS reconcile_objects (sha256 TEXT PRIMARY KEY, final_key TEXT NOT NULL, size INTEGER NOT NULL)");
     this.ensureColumn("state", "last_activity_at", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("state", "abandoned_at", "INTEGER");
     this.ensureColumn("state", "cleanup_at", "INTEGER");
@@ -529,6 +530,63 @@ export class JobDurableObject extends DurableObject<Env> {
         if (reserved) this.ctx.storage.sql.exec("UPDATE state SET bytes_reserved = MAX(0, bytes_reserved - ?) WHERE id = 1", reserved);
         this.ctx.storage.sql.exec("DELETE FROM reservations WHERE permit_id = ?", body.permitId);
         return json({ released: true });
+      }
+
+      if (path === "/storage/reconcile/start" && request.method === "POST") {
+        await this.cleanExpiredPermits();
+        const current = this.readState();
+        const tasks = this.taskCounts();
+        const permits = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count FROM permits WHERE expires_at > ?", Date.now()).toArray() as unknown as Array<{ count: number }>;
+        if (!current || !["completed", "cancelled", "paused", "budget-paused", "verified"].includes(current.status) ||
+          tasks.leased !== 0 || Number(permits[0]?.count || 0) !== 0 || current.bytes_reserved !== 0) {
+          return json({ result: "rejected", reason: "JOB_NOT_QUIESCENT" }, 409);
+        }
+        this.ctx.storage.sql.exec("DELETE FROM reconcile_objects");
+        this.touch();
+        return json({ result: "accepted" });
+      }
+
+      if (path === "/storage/reconcile/batch" && request.method === "POST") {
+        const body = await readJsonLimit<{ items: Array<{ sha256: string; key: string; size: number }> }>(request, 128_000);
+        if (!Array.isArray(body.items) || body.items.length > 250) return json({ result: "rejected", reason: "INVALID_RECONCILE_BATCH" }, 400);
+        const jobPrefix = "jobs/" + row.job_id + "/objects/";
+        for (const item of body.items) {
+          const expected = jobPrefix + item.sha256;
+          if (!HASH_PATTERN.test(item.sha256) || !Number.isSafeInteger(item.size) || item.size < 0 ||
+            !item.key.startsWith(expected + ".") || !/\.(?:avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)$/.test(item.key.slice(expected.length))) {
+            return json({ result: "rejected", reason: "INVALID_RECONCILE_OBJECT" }, 400);
+          }
+        }
+        this.ctx.storage.transactionSync(() => {
+          for (const item of body.items) {
+            this.ctx.storage.sql.exec("INSERT OR REPLACE INTO reconcile_objects (sha256, final_key, size) VALUES (?, ?, ?)",
+              item.sha256, item.key, item.size);
+          }
+        });
+        return json({ result: "accepted", count: body.items.length });
+      }
+
+      if (path === "/storage/reconcile/finish" && request.method === "POST") {
+        const now = Date.now();
+        let objects = 0;
+        let bytes = 0;
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec(
+            "UPDATE content_claims SET state = 'failed', lease_until = 0, updated_at = ? WHERE state IN ('stored','pending') AND sha256 NOT IN (SELECT sha256 FROM reconcile_objects)",
+            now
+          );
+          this.ctx.storage.sql.exec(
+            "INSERT INTO content_claims (sha256, state, task_id, lease_until, temp_key, final_key, size, updated_at) SELECT sha256, 'stored', 'reconciler', 0, '', final_key, size, ? FROM reconcile_objects WHERE 1 ON CONFLICT(sha256) DO UPDATE SET state = 'stored', task_id = 'reconciler', lease_until = 0, temp_key = '', final_key = excluded.final_key, size = excluded.size, updated_at = excluded.updated_at",
+            now
+          );
+          const totals = this.ctx.storage.sql.exec("SELECT COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM reconcile_objects").toArray() as unknown as Array<{ count: number; bytes: number }>;
+          objects = Number(totals[0]?.count || 0);
+          bytes = Number(totals[0]?.bytes || 0);
+          this.ctx.storage.sql.exec("UPDATE state SET bytes_stored = ?, images_stored = ?, bytes_reserved = 0, last_activity_at = ? WHERE id = 1",
+            bytes, objects, now);
+          this.touch();
+        });
+        return json({ result: "reconciled", objects, bytes });
       }
 
       if (path === "/content/claim" && request.method === "POST") {
