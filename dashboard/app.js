@@ -244,6 +244,7 @@
       const response = await fetch("/api/jobs/" + encodeURIComponent(activeJobId) + "/manifest", { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
+        if (response.status === 401 && data.error === "AUTH_REQUIRED") lockDashboard("Session expired. Enter the password to continue.");
         throw new Error(data.error || "MANIFEST_FAILED");
       }
       const blob = await response.blob();
