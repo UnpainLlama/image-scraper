@@ -55,34 +55,22 @@ Use Node.js 20 or later.
 
 Wrangler uses wrangler.jsonc. Do not add credentials to that file. The R2 bucket is accessed through a Worker binding, so the Worker does not need an R2 access key.
 
-## 5. Protect the dashboard and API with Cloudflare Access
+## 5. Password-only authentication
 
-Protect the complete Worker hostname, not only the dashboard route. The policy must cover:
+The dashboard uses one password and no username, email address, Google login or Cloudflare Access JWT. The Worker protects every API route with a signed session cookie.
 
-- /
-- Static dashboard assets
-- /api/jobs
-- /api/jobs/*
+If you keep a Cloudflare Access application for the Worker hostname, add a Bypass policy for everyone. This lets requests reach the Worker; it does not bypass the application's password check. Do not add a public API route or remove the Worker-side session check.
 
-Create an Access application for the deployed Worker hostname and allow only your intended account. Confirm the policy blocks an unauthenticated request to both the dashboard and an API endpoint. Do not leave a public bypass hostname enabled.
+In Cloudflare, open Workers & Pages > image-scraper > Settings > Variables and Secrets. Add these as encrypted secrets:
 
-The Worker also verifies the Access JWT itself. Set the following Worker secrets using the Access application audience tag and your Zero Trust team domain (hostname only, without https://):
+- `APP_PASSWORD`: the password used to unlock the dashboard. Use at least eight characters.
+- `SESSION_SECRET`: an independently generated random value with at least 32 characters. Do not reuse the dashboard password.
 
-    npx wrangler secret put ACCESS_TEAM_DOMAIN
-    npx wrangler secret put ACCESS_AUD
+Keep both values out of GitHub, wrangler.jsonc, and dashboard files. Configure the same secrets separately for any staging Worker.
 
-Requests without a valid Cloudflare Access assertion, or when either setting is missing, are rejected. The Access JWT is checked against Cloudflare's published signing keys, issuer and configured audience. Create the Access application before deploying or the dashboard will correctly remain unavailable.
+The login endpoint allows five attempts in a 15-minute window. Failed attempts are counted by a dedicated object in the existing SQLite-backed Durable Object namespace. Successful login clears the counter. Sessions use a Secure, HttpOnly, SameSite=Strict cookie and expire after 12 hours.
 
-The app has no second login system. Its security boundary is Cloudflare Access plus Worker-side JWT verification.
-
-For staging, create the disposable resources listed below and deploy with `--env staging`. Staging uses a separate bucket and queues; configure its Access secrets separately:
-
-    npx wrangler r2 bucket create image-scraper-staging
-    npx wrangler queues create image-scraper-staging-discovery
-    npx wrangler queues create image-scraper-staging-download
-    npx wrangler queues update image-scraper-staging-discovery --message-retention-period-secs 1209600
-    npx wrangler queues update image-scraper-staging-download --message-retention-period-secs 1209600
-    npx wrangler deploy --env staging
+The dashboard HTML and static assets can be served before login, but every scraper API endpoint returns 401 until a valid session is present. Logging out expires the browser cookie. Rotating SESSION_SECRET invalidates existing sessions.
 
 ## 6. Export credentials
 

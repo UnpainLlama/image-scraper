@@ -89,3 +89,13 @@ footer p { font-size: 11px; }
 @media (max-width: 540px) {
   .recovery-controls { flex-direction: column; }
 }
+
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.auth-panel { max-width: 480px; margin: 0 auto; }
+.auth-panel .panel-heading { margin-bottom: 12px; }
+.auth-panel label { margin-top: 8px; }
+.auth-panel .primary { margin-top: 16px; }
+#auth-notice { min-height: 20px; }
+@media (max-width: 420px) {
+  .topbar-actions { align-items: flex-end; flex-direction: column; gap: 7px; }
+}

@@ -381,6 +381,27 @@ export class JobDurableObject extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const path = new URL(request.url).pathname;
     try {
+      if (path === "/auth/attempt" && request.method === "POST") {
+        this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS auth_login_limits (id INTEGER PRIMARY KEY CHECK (id = 1), window_started_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
+        const rows = this.ctx.storage.sql.exec("SELECT window_started_at, attempts FROM auth_login_limits WHERE id = 1").toArray() as unknown as Array<{ window_started_at: number; attempts: number }>;
+        const now = Date.now();
+        const row = rows[0];
+        if (!row || now - Number(row.window_started_at) >= 15 * 60 * 1000) {
+          this.ctx.storage.sql.exec("INSERT INTO auth_login_limits (id, window_started_at, attempts) VALUES (1, ?, 1) ON CONFLICT(id) DO UPDATE SET window_started_at = excluded.window_started_at, attempts = 1", now);
+          return json({ allowed: true });
+        }
+        if (Number(row.attempts) >= 5) {
+          return json({ allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((Number(row.window_started_at) + 15 * 60 * 1000 - now) / 1000)) }, 429);
+        }
+        this.ctx.storage.sql.exec("UPDATE auth_login_limits SET attempts = attempts + 1 WHERE id = 1");
+        return json({ allowed: true });
+      }
+
+      if (path === "/auth/reset" && request.method === "POST") {
+        this.ctx.storage.sql.exec("DELETE FROM auth_login_limits");
+        return json({ reset: true });
+      }
+
       if (path === "/init" && request.method === "POST") {
         if (this.readState()) return json({ error: "JOB_ALREADY_INITIALIZED" }, 409);
         const body = await readJson<JobSettings & { jobId: string }>(request);

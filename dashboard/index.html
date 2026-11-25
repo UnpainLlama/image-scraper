@@ -17,10 +17,28 @@
         <p class="eyebrow">PRIVATE CLOUDFLARE TOOL</p>
         <h1>Image Scraper</h1>
       </div>
-      <span class="private-label">Private</span>
+      <div class="topbar-actions">
+        <span class="private-label">Password protected</span>
+        <button class="secondary" id="logout-button" type="button" hidden>Lock</button>
+      </div>
     </header>
 
-    <section class="panel" id="new-job-panel">
+    <section class="panel auth-panel" id="auth-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>Unlock Image Scraper</h2>
+          <p>Enter the password to continue.</p>
+        </div>
+      </div>
+      <form id="login-form">
+        <label for="app-password">Password</label>
+        <input id="app-password" name="password" type="password" maxlength="256" autocomplete="current-password" required>
+        <button class="primary" id="login-button" type="submit">Unlock dashboard</button>
+      </form>
+      <p class="notice" id="auth-notice" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="panel" id="new-job-panel" hidden>
       <div class="panel-heading">
         <div>
           <h2>New job</h2>

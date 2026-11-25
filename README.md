@@ -22,6 +22,8 @@ A private Cloudflare-hosted image collection tool. It discovers image files on s
 - Per-job state is isolated in a SQLite-backed Durable Object.
 - R2 is private and is the only image storage backend.
 - GitHub stores application code only; there is no GitHub image mirror.
+- Dashboard access uses a password-only login. The password and session-signing key are Worker secrets, never application files.
+- API requests require a signed, HTTP-only session cookie. Sessions expire after 12 hours, and login attempts are throttled to five per 15-minute window.
 - Application logging and Cloudflare Worker observability are disabled in wrangler.jsonc.
 
 ## Defaults
@@ -43,7 +45,7 @@ A private Cloudflare-hosted image collection tool. It discovers image files on s
 
 ## Quick start
 
-Read DEPLOYMENT.md before deploying. Cloudflare resources (R2 bucket, queues, Durable Object namespace and Access policy) must be provisioned in your account.
+Read DEPLOYMENT.md before deploying. Cloudflare resources (R2 bucket, queues and Durable Object namespace) must be provisioned in your account.
 
     npm install
     npm run typecheck

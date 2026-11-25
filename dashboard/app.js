@@ -3,6 +3,36 @@
   let activeJobId = localStorage.getItem("image-scraper-active-job") || "";
   let currentSnapshot = null;
   let refreshTimer = null;
+  let isAuthenticated = false;
+
+  function lockDashboard(message, configured = true) {
+    isAuthenticated = false;
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+    $("auth-panel").hidden = false;
+    $("login-form").hidden = !configured;
+    $("new-job-panel").hidden = true;
+    $("job-panel").hidden = true;
+    $("logout-button").hidden = true;
+    $("auth-notice").textContent = message || "";
+    $("app-password").value = "";
+  }
+
+  function enterDashboard() {
+    isAuthenticated = true;
+    $("auth-panel").hidden = true;
+    $("logout-button").hidden = false;
+    if (activeJobId) {
+      $("recover-job-id").value = activeJobId;
+      $("job-id").textContent = "Job " + activeJobId;
+      $("job-panel").hidden = false;
+      $("new-job-panel").hidden = true;
+      refresh();
+    } else {
+      $("job-panel").hidden = true;
+      $("new-job-panel").hidden = false;
+    }
+  }
 
   function bytes(value) {
     if (value < 1024) return value + " B";
@@ -26,7 +56,10 @@
       headers: { "content-type": "application/json", ...((options && options.headers) || {}) }
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || "REQUEST_FAILED");
+    if (!response.ok) {
+      if (response.status === 401 && data.error === "AUTH_REQUIRED") lockDashboard("Session expired. Enter the password to continue.");
+      throw new Error(data.error || "REQUEST_FAILED");
+    }
     return data;
   }
 
@@ -101,6 +134,7 @@
         refreshTimer = setTimeout(refresh, 4000);
       }
     } catch (error) {
+      if (!isAuthenticated) return;
       notice(error.message || "STATUS_UNAVAILABLE", "error");
       refreshTimer = setTimeout(refresh, 8000);
     }
@@ -210,6 +244,7 @@
       const response = await fetch("/api/jobs/" + encodeURIComponent(activeJobId) + "/manifest", { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
+        if (response.status === 401 && data.error === "AUTH_REQUIRED") lockDashboard("Session expired. Enter the password to continue.");
         throw new Error(data.error || "MANIFEST_FAILED");
       }
       const blob = await response.blob();
@@ -277,11 +312,53 @@
     }
   });
 
-  if (activeJobId) {
-    $("recover-job-id").value = activeJobId;
-    $("job-id").textContent = "Job " + activeJobId;
-    $("job-panel").hidden = false;
-    $("new-job-panel").hidden = true;
-    refresh();
+  $("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const password = $("app-password").value;
+    $("login-button").disabled = true;
+    $("login-button").textContent = "Checking…";
+    $("auth-notice").textContent = "";
+    try {
+      await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ password })
+      });
+      $("app-password").value = "";
+      enterDashboard();
+    } catch (error) {
+      $("auth-notice").textContent = error.message === "LOGIN_RATE_LIMITED"
+        ? "Too many attempts. Try again after the lockout expires."
+        : error.message === "INVALID_PASSWORD"
+          ? "Incorrect password."
+          : "Login failed. Check the Worker secrets and try again.";
+    } finally {
+      $("login-button").disabled = false;
+      $("login-button").textContent = "Unlock dashboard";
+    }
+  });
+
+  $("logout-button").addEventListener("click", async () => {
+    try {
+      await api("/api/auth/logout", { method: "POST", body: "{}" });
+    } finally {
+      lockDashboard("Dashboard locked.");
+    }
+  });
+
+  async function boot() {
+    try {
+      const status = await api("/api/auth/status", { method: "GET", headers: {} });
+      if (!status.configured) {
+        lockDashboard("Password login is not configured. Add APP_PASSWORD and SESSION_SECRET as Worker secrets.", false);
+      } else if (status.authenticated) {
+        enterDashboard();
+      } else {
+        lockDashboard("Enter the password to unlock the dashboard.");
+      }
+    } catch {
+      lockDashboard("Unable to check authentication. Refresh the page to try again.");
+    }
   }
+
+  boot();
 })();

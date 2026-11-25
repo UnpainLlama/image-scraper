@@ -29,8 +29,8 @@ export interface Env {
   DISCOVERY_QUEUE: Queue<QueuePayload>;
   DOWNLOAD_QUEUE: Queue<QueuePayload>;
   BROWSER: BrowserRunBinding;
-  ACCESS_TEAM_DOMAIN?: string;
-  ACCESS_AUD?: string;
+  APP_PASSWORD?: string;
+  SESSION_SECRET?: string;
 }
 export interface JobSnapshot {
   jobId: string;
