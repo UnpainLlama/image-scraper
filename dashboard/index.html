@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="color-scheme" content="dark">
+  <title>Image Scraper</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PRIVATE CLOUDFLARE TOOL</p>
+        <h1>Image Scraper</h1>
+      </div>
+      <span class="private-label">Private</span>
+    </header>
+
+    <section class="panel" id="new-job-panel">
+      <div class="panel-heading">
+        <div>
+          <h2>New job</h2>
+          <p>Collect image files from one website.</p>
+        </div>
+      </div>
+
+      <div class="recovery-row">
+        <label for="recover-job-id">Resume an existing job</label>
+        <div class="recovery-controls">
+          <input id="recover-job-id" type="text" maxlength="64" placeholder="Paste job ID" autocomplete="off" spellcheck="false">
+          <button class="secondary" id="recover-button" type="button">Open job</button>
+        </div>
+      </div>
+
+      <form id="job-form">
+        <label for="site-url">Website</label>
+        <input id="site-url" name="siteUrl" type="url" placeholder="https://example.com" required autocomplete="url">
+
+        <label for="pages">Pages to scrape</label>
+        <textarea id="pages" name="pages" rows="4" placeholder="One page URL per line. Leave empty to use the website URL."></textarea>
+
+        <div class="field-grid">
+          <div>
+            <label for="mode">Scraping mode</label>
+            <select id="mode" name="mode">
+              <option value="exact">Exact pages only</option>
+              <option value="crawl">Follow same-site links</option>
+            </select>
+          </div>
+          <div>
+            <label for="concurrency">Parallel workers <strong id="concurrency-value">5</strong></label>
+            <input id="concurrency" name="concurrency" type="range" min="1" max="20" value="5">
+          </div>
+        </div>
+
+        <div id="depth-field" class="depth-field" hidden>
+          <label for="depth">Maximum crawl depth</label>
+          <input id="depth" name="maxDepth" type="number" min="0" max="10" value="3">
+        </div>
+
+        <div class="defaults">
+          <span>Maximum file size <strong>50 MiB</strong></span>
+          <span>Job storage budget <strong>8 GiB</strong></span>
+          <span>Domain delay <strong>1 second minimum</strong></span>
+        </div>
+
+        <button class="primary" id="start-button" type="submit">Start scraping</button>
+      </form>
+    </section>
+
+    <section class="panel" id="job-panel" hidden>
+      <div class="panel-heading">
+        <div>
+          <h2>Current job</h2>
+          <p id="job-id"></p>
+        </div>
+        <span class="status" id="job-status">Initializing</span>
+      </div>
+
+      <div class="metrics">
+        <div><strong id="pages-count">0 / 0</strong><span>Pages completed</span></div>
+        <div><strong id="images-count">0</strong><span>Images discovered</span></div>
+        <div><strong id="stored-count">0</strong><span>Images stored</span></div>
+        <div><strong id="failed-count">0</strong><span>Failed images</span></div>
+      </div>
+
+      <div class="storage-line">
+        <span>R2 storage</span>
+        <strong id="storage-count">0 B / 8 GiB</strong>
+      </div>
+      <div class="meter"><span id="storage-meter"></span></div>
+
+      <div class="error-list" id="error-list" hidden></div>
+
+      <div class="actions">
+        <button class="secondary" id="pause-button" type="button">Pause</button>
+        <button class="secondary" id="resume-button" type="button" hidden>Resume</button>
+        <button class="danger-outline" id="cancel-button" type="button">Stop job</button>
+      </div>
+
+      <div class="export-panel">
+        <h3>Export and clear</h3>
+        <p>Download the manifest, copy the R2 objects to your computer, verify every file, then clear the cloud job.</p>
+        <button class="secondary" id="manifest-button" type="button" disabled>Download manifest</button>
+        <label class="file-label" for="verification-file">Verification report from scripts/verify.sh</label>
+        <input id="verification-file" type="file" accept="application/json,.json">
+        <button class="secondary" id="verify-button" type="button" disabled>Submit verification</button>
+        <p class="verification-state" id="verification-state">Not attested by the local export script.</p>
+        <p class="verification-disclaimer">The server checks the script report against the manifest totals. This is a local-script attestation, not independent proof of your computer's files.</p>
+        <button class="danger" id="clear-button" type="button" disabled>Clear verified job</button>
+      </div>
+      <p class="notice" id="job-notice" role="status" aria-live="polite"></p>
+      <p class="retention-countdown" id="retention-countdown" hidden></p>
+    </section>
+
+    <footer>
+      <p>Images are held temporarily in a private R2 bucket. Job state is isolated per job and removed when clearing succeeds. Cloudflare platform-level operational records are outside this application's control.</p>
+    </footer>
+  </main>
+</body>
+</html>
