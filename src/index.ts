@@ -1,7 +1,7 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
 import { verifyAccess } from "./access";
 import { discoverFromHtml, discoverFromCss } from "./discovery";
-import { fetchForJob, validatePublicUrl } from "./security";
+import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, validatePublicUrl } from "./security";
 import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
 import type { Env, JobMode, JobSettings, JobSnapshot, QueuePayload, StoredTaskPayload } from "./types";
 export { JobDurableObject } from "./job";
@@ -136,19 +136,24 @@ function escapeRegex(value: string): string {
 
 async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allowedOrigin: string): Promise<string | null> {
   const guard = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml" }, allowedOrigin);
+  let releaseBrowser: (() => Promise<void>) | null = null;
   try {
     await guard.response.body?.cancel();
     if (guard.finalUrl.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
-    const originPattern = escapeRegex(new URL(allowedOrigin).origin);
+    await guard.release();
+    releaseBrowser = await acquireBrowserPagePermit(env, jobId, guard.finalUrl.toString(), allowedOrigin);
+    const patterns = browserRequestPatterns(allowedOrigin);
     const response = await env.BROWSER.quickAction("content", {
       url: guard.finalUrl.toString(),
-      allowRequestPattern: ["/^" + originPattern + "(?:\\/|$)/i"],
-      rejectRequestPattern: ["/^(?!" + originPattern + "(?:\\/|$)).*/i"],
+      ...patterns,
       gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
     });
     if (!response.ok) return null;
     return await readLimitedText(response, 2_500_000);
-  } finally { await guard.release(); }
+  } finally {
+    await guard.release();
+    if (releaseBrowser) await releaseBrowser();
+  }
 }
 
 async function fetchStylesheet(env: Env, jobId: string, url: string): Promise<string | null> {
