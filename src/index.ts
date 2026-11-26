@@ -476,7 +476,7 @@ async function probeTerminalTarget(request: Request): Promise<Response> {
   if (!probe.ok) {
     return json({ error: "SITE_PROBE_FAILED", status: probe.status, target, maxPages: pageLimit }, 422);
   }
-  if (!/(?:text\/html|application\/xhtml\+xml)/i.test(probe.contentType)) {
+  if (probe.contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(probe.contentType)) {
     return json({ error: "TARGET_NOT_HTML", contentType: probe.contentType, target, maxPages: pageLimit }, 422);
   }
   return json({ target, maxPages: pageLimit, probe });
