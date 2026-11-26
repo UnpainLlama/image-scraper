@@ -492,6 +492,10 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
   }
   if (["pause", "resume", "cancel"].includes(action) && request.method === "POST") {
     const body = action === "resume" ? await readJson<{ budgetBytes?: number }>(request) : {};
+    if (action === "resume" && body.budgetBytes !== undefined &&
+      (!Number.isSafeInteger(body.budgetBytes) || body.budgetBytes > DEFAULT_BUDGET)) {
+      return json({ error: "FREE_TIER_BUDGET_LIMIT", maximumBytes: DEFAULT_BUDGET }, 400);
+    }
     const response = await jobRequest(env, jobId, "/" + action, body);
     const result = await response.json().catch(() => ({}));
     return json(result, response.status);
