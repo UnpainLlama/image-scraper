@@ -222,7 +222,7 @@ export class PscraperContainer extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const container = ctx.container;
-    if (container?.running) {
+    if (container && container.running) {
       void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(10 * 60 * 1000));
     }
   }
@@ -236,6 +236,9 @@ export class PscraperContainer extends DurableObject<Env> {
 
   private async startContainer(): Promise<void> {
     const container = this.ctx.container;
+    if (!container) {
+      throw new Error("Cloudflare Container binding is not available in this Durable Object");
+    }
     if (!container.running) {
       const required: Array<keyof Env> = [
         "R2_ACCOUNT_ID",
@@ -288,7 +291,9 @@ export class PscraperContainer extends DurableObject<Env> {
     const target = new URL("http://container:8080/terminal");
     const forwarded = new Request(target, request);
     forwarded.headers.delete("host");
-    return this.ctx.container.getTcpPort(8080).fetch(forwarded);
+    const container = this.ctx.container;
+    if (!container) return json({ error: "CONTAINER_UNAVAILABLE" }, 503);
+    return container.getTcpPort(8080).fetch(forwarded);
   }
 }
 
