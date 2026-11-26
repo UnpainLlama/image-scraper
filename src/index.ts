@@ -136,14 +136,15 @@ function escapeRegex(value: string): string {
   return value.split("").map(character => ".*+?^$()|[]{}\\/".includes(character) ? "\\" + character : character).join("");
 }
 
-async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allowedOrigin: string): Promise<string | null> {
+async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allowedOrigin: string, useJobPermit = true): Promise<string | null> {
   // Browser Run is an independent retrieval path, not a fallback that first
-  // requires the Worker fetch to succeed. This matters for sites that return
+  // requires a successful Worker fetch. This matters for sites that return
   // 403 to datacenter HTTP requests but serve the same public page in a browser.
   const target = validatePublicUrl(pageUrl);
-  if (target.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
-  const releaseBrowser = await acquireBrowserPagePermit(env, jobId, target.toString(), allowedOrigin);
+  if ( target.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
+  let releaseBrowser: (() => Promise<void>) | null = null;
   try {
+    if (useJobPermit) releaseBrowser = await acquireBrowserPagePermit(env, jobId, target.toString(), allowedOrigin);
     const response = await env.BROWSER.quickAction("content", {
       url: target.toString(),
       ...browserRequestPatterns(allowedOrigin),
@@ -155,7 +156,7 @@ async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allow
     // Browser Run is optional and has a limited daily allowance on Workers Free.
     return null;
   } finally {
-    await releaseBrowser();
+    if (releaseBrowser) await releaseBrowser();
   }
 }
 
@@ -494,7 +495,7 @@ async function probeTerminalTarget(request: Request, env: Env): Promise<Response
   // A 403 from Worker fetch is not conclusive: the public page may still be
   // available through a normal browser request. Test that path independently.
   if (probe.status === 403) {
-    const rendered = await fetchRenderedHtml(env, "terminal-probe-" + crypto.randomUUID(), safeUrl.toString(), safeUrl.origin);
+    const rendered = await fetchRenderedHtml(env, "terminal-probe-" + crypto.randomUUID(), safeUrl.toString(), safeUrl.origin, false);
     if (rendered) {
       return json({
         target, maxPages: pageLimit,
