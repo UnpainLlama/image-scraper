@@ -58,14 +58,22 @@
           <div>
             <label for="mode">Scraping mode</label>
             <select id="mode" name="mode">
-              <option value="exact">Exact pages only</option>
+              <option value="exact">Exact pages + source pagination</option>
               <option value="crawl">Follow same-site links</option>
             </select>
           </div>
           <div>
-            <label for="concurrency">Parallel workers <strong id="concurrency-value">5</strong></label>
-            <input id="concurrency" name="concurrency" type="range" min="1" max="20" value="5">
+            <label for="concurrency">Parallel workers <strong id="concurrency-value">3</strong></label>
+            <input id="concurrency" name="concurrency" type="range" min="1" max="5" value="3">
           </div>
+        </div>
+
+        <div id="elitebabes-mode-field" class="depth-field" hidden>
+          <label for="elitebabes-mode">EliteBabes collection mode</label>
+          <select id="elitebabes-mode" name="eliteBabesMode">
+            <option value="galleries">Full-size gallery images</option>
+            <option value="images">Listing thumbnails (faster)</option>
+          </select>
         </div>
 
         <div id="depth-field" class="depth-field" hidden>
@@ -75,6 +83,7 @@
 
         <button class="primary" id="start-button" type="submit">Start scraping</button>
       </form>
+      <p class="form-hint">Free-tier defaults: up to 100 pages, 2,000 images and 1 GiB per job. Browser-rendered pages are best-effort within the daily Browser Run allowance.</p>
       <p class="notice" id="start-notice" role="status" aria-live="polite"></p>
     </section>
 
@@ -98,7 +107,7 @@
 
       <div class="storage-line">
         <span>R2 storage</span>
-        <strong id="storage-count">0 B / 8 GiB</strong>
+        <strong id="storage-count">0 B / 1 GiB</strong>
       </div>
       <div class="meter"><span id="storage-meter"></span></div>
 

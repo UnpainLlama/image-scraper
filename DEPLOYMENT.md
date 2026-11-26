@@ -1,21 +1,43 @@
 # Deployment and Cloudflare setup
 
-This repository contains application code only. It does not create Cloudflare resources automatically and does not include account credentials.
+This repository contains application code only. It does not create Cloudflare resources automatically and does not include account credentials. The scraper runs directly on Cloudflare Workers; no Python runtime, Docker image, Cloudflare Container, Linux VM or external Python host is required.
 
 ## 1. Cloudflare plan and resources
 
-A Workers Paid plan is required for the intended image sizes and crawl volume. Workers Free has a 10 ms CPU limit and fixed 24-hour Queue retention; the streaming/hash path and intended workload need Paid CPU time and the longer queue retention window. The application is designed around these resources:
+**The TypeScript implementation can run on Workers Free for modest jobs.** The repository defaults are intentionally limited to 1 GiB, 100 pages and 2,000 images per job, with a maximum of five queue workers per queue.
 
-- Worker: image-scraper
-- R2 bucket: image-scraper-archive
-- Queue: image-scraper-discovery
-- Queue: image-scraper-download
-- SQLite-backed Durable Object class: JobDurableObject
-- Browser Run binding: BROWSER
+Relevant current Free allowances:
+
+- **Workers:** 100,000 requests/day and 10 ms CPU time per ordinary Worker invocation. Keep API requests small; image transfers and parsing are processed asynchronously by Queue consumers.
+- **Queues:** 10,000 standard operations/day, with 24-hour message retention. A normal message delivery usually costs three operations (write, read and delete); retries add more.
+- **Durable Objects:** SQLite-backed classes are supported on Free. The documented Free allowances include 100,000 DO requests/day, 13,000 GB-seconds/day, 5 million SQL rows read/day, 100,000 SQL rows written/day, and 5 GB of total SQLite storage. Free-plan usage above any one of these daily limits is rejected until the daily reset. This application uses SQLite storage.
+- **Queue consumers:** Queue consumer invocations have a default 30-second active CPU budget and a 15-minute wall-clock limit. The scraper leaves that default unchanged; normal Worker HTTP requests still have the separate 10 ms Free CPU limit.
+- **Browser Run:** 10 minutes/day on Free. It is only a fallback for pages that look JavaScript-rendered; if the quota is exhausted, the scraper continues with static HTML.
+- **R2 Standard storage:** 10 GB-month, 1 million Class A operations and 10 million Class B operations/month, with free Internet egress. R2 usage above the included allowances is billable.
+
+The application does not upgrade the account or enable a Paid plan. Free quotas are not unlimited: Queue or Worker/DO operations can fail after their included limits are reached, and R2 overage can incur charges. Keep stored objects within the R2 allowance, export and Clear verified jobs, and monitor usage in the Cloudflare dashboard. A large crawl, repeated retries, or many retained jobs may not fit the Free allowances. Do not assume that a job can exceed the defaults without cost.
+
+Cloudflare reference pages:
+- [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+- [Queues pricing and limits](https://developers.cloudflare.com/queues/platform/pricing/)
+- [Durable Objects limits](https://developers.cloudflare.com/durable-objects/platform/limits/)
+- [Browser Run limits](https://developers.cloudflare.com/browser-run/limits/)
+- [R2 pricing](https://developers.cloudflare.com/r2/pricing/)
+
+The application uses these existing resources:
+
+- Worker: `image-scraper`
+- R2 bucket: `image-scraper-archive`
+- Queue: `image-scraper-discovery`
+- Queue: `image-scraper-download`
+- SQLite-backed Durable Object class: `JobDurableObject`
+- Browser Run binding: `BROWSER`
 
 The Worker configuration binds R2, both queues, the Durable Object namespace, static assets and Browser Run. Wrangler creates or updates the Durable Object namespace during deployment using the migration in wrangler.jsonc.
 
-## 2. Create the R2 bucket
+## 2. Reuse the existing R2 bucket
+
+The intended bucket is `image-scraper-archive`. Reuse it; **do not create a second bucket** if this one already exists. Only when setting up a brand-new account without the bucket, run:
 
     npx wrangler r2 bucket create image-scraper-archive
 
@@ -31,17 +53,19 @@ Cloudflare documents that objects are typically removed within 24 hours after th
 
 ## 3. Create the queues
 
+Reuse the named production queues if they already exist; do not create duplicates.
+
     npx wrangler queues create image-scraper-discovery
     npx wrangler queues create image-scraper-download
 
-Workers Paid Queue retention is configurable up to 14 days. Set both production queues to the maximum; Free remains fixed at 24 hours:
+Workers Free Queue retention is fixed at 24 hours. Workers Paid can configure retention up to 14 days. The following optional commands apply only to a Paid account; do not run them on Free:
 
     npx wrangler queues update image-scraper-discovery --message-retention-period-secs 1209600
     npx wrangler queues update image-scraper-download --message-retention-period-secs 1209600
 
-Wrangler sets a low delivery retry count of five. Queue messages contain only the job ID and task ID; URLs and depth remain in the per-job Durable Object. The Durable Object is authoritative. A consumer leases a task before doing work. Paused consumers acknowledge hints without leasing, and resume republishes pending tasks. An alarm reconciler republishes pending tasks after a send failure, lost/exhausted hint, or expired lease. Queue retention and delivery retries therefore do not determine whether work is lost. `sendBatch` publications are limited to 100 messages per batch.
+Wrangler configures a retry count of five. Queue messages contain only the job ID and task ID; URLs and depth remain in the per-job Durable Object. The Durable Object is authoritative. A consumer leases a task before doing work. Paused consumers acknowledge hints without leasing, and resume republishes pending tasks. An alarm reconciler republishes tasks after a send failure, lost/exhausted hint, or expired lease. `sendBatch` publications are limited to 100 messages per batch.
 
-Consumer-level concurrency is capped at 50 invocations per queue in Wrangler. A separate Durable Object enforces each job's configured concurrency (1–20) and per-domain delay.
+Consumer concurrency is capped at five invocations per queue. A separate Durable Object enforces each job's configured concurrency (1–5) and per-domain delay.
 
 ## 4. Install and deploy
 
@@ -63,12 +87,12 @@ If you keep a Cloudflare Access application for the Worker hostname, add a Bypas
 
 In Cloudflare, open Workers & Pages > image-scraper > Settings > Variables and Secrets. Add these as encrypted secrets:
 
-- `APP_PASSWORD`: the password used to unlock the dashboard. Use at least eight characters.
-- `SESSION_SECRET`: an independently generated random value with at least 32 characters. Do not reuse the dashboard password.
+- `APP_PASSWORD`: the password used to unlock the dashboard. Use at least 15 characters.
+- `SESSION_SECRET`: an independently generated random value with at least 32 random characters. Do not reuse the dashboard password.
 
 Keep both values out of GitHub, wrangler.jsonc, and dashboard files. Configure the same secrets separately for any staging Worker.
 
-The login endpoint allows five attempts in a 15-minute window. Failed attempts are counted by a dedicated object in the existing SQLite-backed Durable Object namespace. Successful login clears the counter. Sessions use a Secure, HttpOnly, SameSite=Strict cookie and expire after 12 hours.
+The login endpoint allows five attempts in a 15-minute window. Failed attempts are counted by the existing SQLite-backed Durable Object namespace. Successful login clears the counter. Sessions use a Secure, HttpOnly, SameSite=Strict cookie and expire after 12 hours.
 
 The dashboard HTML and static assets can be served before login, but every scraper API endpoint returns 401 until a valid session is present. Logging out expires the browser cookie. Rotating SESSION_SECRET invalidates existing sessions.
 

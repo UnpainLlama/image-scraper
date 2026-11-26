@@ -1,18 +1,18 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
 import { handleAuthRoute, isAuthenticated } from "./auth";
 import { discoverFromHtml, discoverFromCss } from "./discovery";
-import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl } from "./site-adapters";
+import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl, normalizeSiteListingUrl } from "./site-adapters";
 import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, validatePublicUrl } from "./security";
 import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
 import type { Env, JobMode, JobSettings, JobSnapshot, QueuePayload, StoredTaskPayload } from "./types";
 export { JobDurableObject } from "./job";
 
-const DEFAULT_BUDGET = 8 * 1024 * 1024 * 1024;
+const DEFAULT_BUDGET = 1024 * 1024 * 1024;
 const DEFAULT_MAX_FILE = 50 * 1024 * 1024;
 const MANIFEST_LIMIT = 50_000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 
-interface CreateJobBody { siteUrl: string; pages?: string[]; mode: JobMode; concurrency?: number; maxDepth?: number; }
+interface CreateJobBody { siteUrl: string; pages?: string[]; mode: JobMode; concurrency?: number; maxDepth?: number; eliteBabesMode?: "images" | "galleries"; }
 interface VerifyReport { manifestSha256: string; filesChecked: number; bytesChecked: number; failed: number; }
 interface TaskRegistration { taskId: string; url: string; urlHash: string; depth?: number; }
 
@@ -144,13 +144,20 @@ async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allow
     await guard.release();
     releaseBrowser = await acquireBrowserPagePermit(env, jobId, guard.finalUrl.toString(), allowedOrigin);
     const patterns = browserRequestPatterns(allowedOrigin);
-    const response = await env.BROWSER.quickAction("content", {
-      url: guard.finalUrl.toString(),
-      ...patterns,
-      gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
-    });
-    if (!response.ok) return null;
-    return await readLimitedText(response, 2_500_000);
+    try {
+      const response = await env.BROWSER.quickAction("content", {
+        url: guard.finalUrl.toString(),
+        ...patterns,
+        gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
+      });
+      if (!response.ok) return null;
+      return await readLimitedText(response, 2_500_000);
+    } catch {
+      // Browser Run has a 10-minute/day allowance on Workers Free. If the
+      // optional renderer is unavailable or quota-limited, continue with the
+      // original HTML instead of failing the whole image job.
+      return null;
+    }
   } finally {
     await guard.release();
     if (releaseBrowser) await releaseBrowser();
@@ -186,7 +193,7 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
   if (!settingsResponse.ok) throw new ScrapeError("JOB_STATE_UNAVAILABLE", true, 3);
   const settings = await settingsResponse.json() as JobSettings;
   const pageUrl = validatePublicUrl(payload.url, settings.allowedOrigin).toString();
-  let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[] };
+  let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[]; followPages?: boolean };
   if (isSexComUrl(pageUrl)) {
     discovered = await discoverSexComApiPage(pageUrl, async apiUrl => {
       const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" }, "https://www.sex.com");
@@ -221,7 +228,7 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
       if (rendered) html = rendered;
     }
 
-    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl) ||
+    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl, { eliteBabesMode: settings.eliteBabesMode }) ||
       discoverFromHtml(html, resolvedPageUrl, settings.maxImagesPerPage || 2000, 2000);
   }
   const allImages = [...discovered.images];
@@ -236,12 +243,19 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
     taskId: await sha256Text("image|" + url), url, urlHash: await sha256Text(url)
   })));
   const pageItems: TaskRegistration[] = [];
-  if (settings.mode === "crawl" && Number(payload.depth || 0) < settings.maxDepth) {
+  const currentDepth = Number(payload.depth || 0);
+  const followAdapterPages = discovered.followPages === true;
+  const mayFollowGenericPages = settings.mode === "crawl" && currentDepth < settings.maxDepth;
+  if (followAdapterPages || mayFollowGenericPages) {
     const uniquePages = Array.from(new Set(discovered.pages)).slice(0, 2000);
     for (const url of uniquePages) {
       try {
         if (new URL(url).origin !== settings.allowedOrigin) continue;
-        pageItems.push({ taskId: await sha256Text("page|" + url), url, urlHash: await sha256Text(url), depth: Number(payload.depth || 0) + 1 });
+        // Site-adapter pages are bounded album/post/pagination continuations,
+        // so they remain available in exact mode and do not consume generic
+        // crawl depth. Generic links still obey the user's depth setting.
+        const depth = followAdapterPages ? currentDepth : currentDepth + 1;
+        pageItems.push({ taskId: await sha256Text("page|" + url), url, urlHash: await sha256Text(url), depth });
       } catch { /* Invalid discovered links are ignored, never sent to the DO. */ }
     }
   }
@@ -381,17 +395,20 @@ async function createJob(request: Request, env: Env): Promise<Response> {
   if (pages.length > 50) throw new ScrapeError("TOO_MANY_SEED_PAGES");
   const normalizedPages = new Set<string>();
   for (const page of pages) {
-    const url = validatePublicUrl(page, site.toString());
+    const url = validatePublicUrl(normalizeSiteListingUrl(page), site.toString());
     if (url.origin !== site.origin) throw new ScrapeError("SEED_PAGE_OUTSIDE_WEBSITE");
     normalizedPages.add(url.toString());
   }
   const jobId = crypto.randomUUID().replace(/-/g, "");
   const settings: JobSettings = {
     allowedOrigin: site.origin, mode: body.mode,
-    concurrency: Math.min(20, Math.max(1, Math.floor(Number(body.concurrency || 5)))),
+    concurrency: Number.isFinite(Number(body.concurrency))
+      ? Math.min(5, Math.max(1, Math.floor(Number(body.concurrency))))
+      : 3,
     maxDepth: body.mode === "crawl" ? Math.min(10, Math.max(0, Math.floor(Number(body.maxDepth ?? 3)))) : 0,
-    maxPages: 500, maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
-    perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 50_000
+    maxPages: 100, maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
+    perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 2000,
+    eliteBabesMode: body.eliteBabesMode === "images" ? "images" : "galleries"
   };
   const init = await jobRequest(env, jobId, "/init", { jobId, ...settings });
   if (!init.ok) throw new ScrapeError("JOB_INITIALIZATION_FAILED");
@@ -476,6 +493,10 @@ async function routeApi(request: Request, env: Env): Promise<Response> {
   }
   if (["pause", "resume", "cancel"].includes(action) && request.method === "POST") {
     const body = action === "resume" ? await readJson<{ budgetBytes?: number }>(request) : {};
+    if (action === "resume" && body.budgetBytes !== undefined &&
+      (!Number.isSafeInteger(body.budgetBytes) || body.budgetBytes > DEFAULT_BUDGET)) {
+      return json({ error: "FREE_TIER_BUDGET_LIMIT", maximumBytes: DEFAULT_BUDGET }, 400);
+    }
     const response = await jobRequest(env, jobId, "/" + action, body);
     const result = await response.json().catch(() => ({}));
     return json(result, response.status);

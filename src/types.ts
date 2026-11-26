@@ -11,6 +11,7 @@ export interface JobSettings {
   perDomainDelayMs: number;
   maxImagesPerPage?: number;
   maxImagesPerJob?: number;
+  eliteBabesMode?: "images" | "galleries";
 }
 export interface QueuePayload { jobId: string; taskId: string; }
 export interface StoredTaskPayload { url: string; depth?: number; }
@@ -59,5 +60,11 @@ export interface JobSnapshot {
 export interface FetchResult { response: Response; finalUrl: URL; permitId: string; release: () => Promise<void>; }
 export interface RobotsPolicy { rules: Array<{ allow: boolean; path: string }>; crawlDelayMs: number; }
 export interface ImageCandidate { url: string; }
-export interface DiscoveryResult { images: ImageCandidate[]; stylesheets: string[]; pages: string[]; }
+export interface DiscoveryResult {
+  images: ImageCandidate[];
+  stylesheets: string[];
+  pages: string[];
+  /** True when pages are bounded site-adapter continuations (albums or pagination). */
+  followPages?: boolean;
+}
 export interface ImageFormat { extension: string; contentType: string; }
