@@ -2,11 +2,15 @@ import { parseHTML } from "linkedom";
 import type { DiscoveryResult } from "./types";
 
 const NON_IMAGE = /\.(?:mp4|webm|mov|m4v|mp3|ogg|pdf|css|js|woff2?|ttf|otf)(?:$|[?#])/i;
+const IMAGE_FILE = /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|tiff?|webp)(?:$|[?#])/i;
 const MAX_IMAGES = 2000;
 const MAX_PAGES = 2000;
 const MAX_API_PAGES = 500;
 const SEXCOM_MEDIA_BASE = "https://imagex1.sx.cdn.live";
 const SEXCOM_PAGE_SIZE = 40;
+const RULE34_PAGE_SIZE = 42;
+const REALBOORU_PAGE_SIZE = 42;
+const BUONDUA_LIST_STEP = 20;
 
 function hostMatches(host: string, domain: string): boolean {
   return host === domain || host.endsWith("." + domain);
@@ -25,9 +29,8 @@ function absolute(raw: string | null | undefined, base: string): string | null {
 }
 
 function result(): DiscoveryResult {
-  // These site adapters return only known pagination, album, or post links.
-  // Those links are part of the adapter's normal image workflow, not an
-  // unbounded generic crawl, so the worker may follow them in exact mode too.
+  // These continuations are bounded, site-specific pagination and album/post
+  // links. Generic page links remain restricted to explicit Crawl mode.
   return { images: [], stylesheets: [], pages: [], followPages: true };
 }
 
@@ -45,32 +48,41 @@ function addImage(output: DiscoveryResult, raw: string | null | undefined, base:
   if (!output.images.some(item => item.url === url)) output.images.push({ url });
 }
 
+function nextOffsetPage(base: string, parameter: string, step: number): string {
+  const next = new URL(base);
+  const current = Number(next.searchParams.get(parameter) || 0);
+  next.searchParams.set(parameter, String((Number.isFinite(current) ? Math.max(0, current) : 0) + step));
+  return next.toString();
+}
+
 function parseRule34(document: Document, base: string): DiscoveryResult {
   const output = result();
   const pageUrl = new URL(base);
   const isPost = pageUrl.searchParams.get("s") === "view" && pageUrl.searchParams.has("id");
 
   if (isPost) {
-    // The Python adapter's fallback resolves the original image from a post
-    // page when the sample URL is unavailable. Never accept video sources.
     const image = document.querySelector("#image");
     addImage(output, image?.getAttribute("src") || image?.getAttribute("data-src"), base);
     return output;
   }
 
+  let found = 0;
   for (const anchor of Array.from(document.querySelectorAll("span.thumb a[href]"))) {
     const image = anchor.querySelector("img");
     const thumb = image?.getAttribute("src") || image?.getAttribute("data-src") || "";
     if (!thumb) continue;
-    const sample = thumb.replace("/thumbnails/", "/samples/").replace("thumbnail_", "sample_");
-    addImage(output, sample, base);
+    found += 1;
+
+    // The Python adapter removes query strings before converting thumbnails
+    // to /samples/ URLs. Preserve that behavior for signed/cache-busted URLs.
+    const cleanThumb = thumb.split("#", 1)[0]!.split("?", 1)[0]!;
+    const sample = cleanThumb.replace("/thumbnails/", "/samples/").replace("thumbnail_", "sample_");
+    addImage(output, sample || cleanThumb, base);
   }
 
-  // Rule34 advances listing offsets by pid. Post links are intentionally not
-  // crawled here because the original bulk adapter prefers the sample image.
-  for (const anchor of Array.from(document.querySelectorAll('a[href*="pid="]'))) {
-    addPage(output, anchor.getAttribute("href"), base);
-  }
+  // The CLI advances Rule34's offset by 42 until it receives an empty page.
+  // Synthesize the next offset instead of depending on pagination markup.
+  if (found > 0) addPage(output, nextOffsetPage(base, "pid", RULE34_PAGE_SIZE), base);
   return output;
 }
 
@@ -78,21 +90,58 @@ function parseRealbooru(document: Document, base: string): DiscoveryResult {
   const output = result();
   const pageUrl = new URL(base);
   const isPost = pageUrl.searchParams.get("s") === "view" && pageUrl.searchParams.has("id");
+
   if (isPost) {
-    const image = document.querySelector("#image");
-    addImage(output, image?.getAttribute("src") || image?.getAttribute("data-src"), base);
-  } else {
-    // Realbooru's original adapter resolves the source image from each post.
-    // Following only post links and listing offsets also works when a user
-    // submits a listing in exact mode; unrelated same-site links are ignored.
-    for (const anchor of Array.from(document.querySelectorAll('a[href*="s=view"][href*="id="]'))) {
-      addPage(output, anchor.getAttribute("href"), base);
+    const primary = document.querySelector("#image");
+    addImage(output, primary?.getAttribute("src") || primary?.getAttribute("data-src"), base);
+
+    // The original adapter falls back to scanning the post page for a
+    // non-thumbnail /images/ asset if #image is missing or unusable.
+    if (output.images.length === 0) {
+      for (const element of Array.from(document.querySelectorAll("img[src], source[src], a[href]"))) {
+        const raw = element.getAttribute("src") || element.getAttribute("href") || "";
+        const url = absolute(raw, base);
+        if (!url) continue;
+        const parsed = new URL(url);
+        if (!parsed.pathname.includes("/images/") || parsed.pathname.toLowerCase().includes("thumbnail")) continue;
+        if (!IMAGE_FILE.test(parsed.pathname)) continue;
+        addImage(output, url, base);
+      }
     }
-    for (const anchor of Array.from(document.querySelectorAll('a[href*="pid="]'))) {
-      addPage(output, anchor.getAttribute("href"), base);
-    }
+    return output;
   }
+
+  let foundPosts = 0;
+  const seen = new Set<string>();
+  for (const anchor of Array.from(document.querySelectorAll('a[href*="s=view"][href*="id="]'))) {
+    const href = anchor.getAttribute("href") || "";
+    const match = href.match(/[?&]id=(\d+)/);
+    const postId = match?.[1] || href;
+    if (seen.has(postId)) continue;
+    const image = anchor.querySelector("img");
+    const thumb = image?.getAttribute("src") || image?.getAttribute("data-src") || "";
+    if (!thumb || (!thumb.includes("thumbnail") && !thumb.includes("/thumbnails/"))) continue;
+    seen.add(postId);
+    foundPosts += 1;
+    addPage(output, href, base);
+  }
+
+  // The original Realbooru adapter increments pid by 42 and stops at the
+  // first empty page. This keeps list pagination independent of page markup.
+  if (foundPosts > 0) addPage(output, nextOffsetPage(base, "pid", REALBOORU_PAGE_SIZE), base);
   return output;
+}
+
+function nextEliteBabesListPage(base: string): string {
+  const current = new URL(base);
+  const path = current.pathname.replace(/\/+$/, "");
+  const match = path.match(/^(.*)\/page\/(\d+)$/i);
+  const root = match ? match[1]! : path;
+  const page = match ? Number(match[2]) : 1;
+  current.pathname = (root || "") + "/page/" + (Number.isFinite(page) ? page + 1 : 2) + "/";
+  current.search = "";
+  current.hash = "";
+  return current.toString();
 }
 
 function parseElitebabes(document: Document, base: string): DiscoveryResult {
@@ -106,6 +155,7 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
     if (!/\.(?:jpe?g|png|webp)$/i.test(parsed.pathname)) return;
     addImage(output, url, base);
   };
+
   const listItems = Array.from(document.querySelectorAll("ul.list-gallery li"));
   if (listItems.length) {
     for (const item of listItems) {
@@ -115,11 +165,13 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
     for (const anchor of Array.from(document.querySelectorAll('a[href*="/page/"]'))) {
       addPage(output, anchor.getAttribute("href"), base);
     }
+    // EliteBabes uses /page/N/ for home lists and /tag/name/page/N/ for tags.
+    addPage(output, nextEliteBabesListPage(base), base);
     return output;
   }
 
   // Gallery pages expose full-size CDN images in links or image attributes.
-  // Thumbnail variants remain excluded to preserve the original gallery mode.
+  // Thumbnail variants remain excluded to preserve the original galleries mode.
   for (const anchor of Array.from(document.querySelectorAll("a[href]"))) contentImage(anchor.getAttribute("href"));
   for (const image of Array.from(document.querySelectorAll("img"))) {
     for (const attr of ["src", "data-src", "data-original"]) contentImage(image.getAttribute(attr));
@@ -127,51 +179,63 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
   return output;
 }
 
+function albumIdFromPath(path: string): string {
+  const match = path.match(/-(\d+)\/?$/) || path.match(/\/(\d+)\/?$/);
+  return match?.[1] || "";
+}
+
 function parseBuondua(document: Document, base: string): DiscoveryResult {
   const output = result();
-  const path = new URL(base).pathname;
-  const albumMatch = path.match(/-(\d+)\/?$/) || path.match(/\/(\d+)\/?$/);
-  if (albumMatch) {
-    const albumId = albumMatch[1];
+  const pageUrl = new URL(base);
+  const albumId = albumIdFromPath(pageUrl.pathname);
+
+  if (albumId) {
     for (const image of Array.from(document.querySelectorAll("img"))) {
       for (const attr of ["src", "data-src", "data-original", "data-lazy-src"]) {
         const raw = image.getAttribute(attr);
         const url = absolute(raw, base);
         if (!url) continue;
         const parsed = new URL(url);
-        if (!hostMatches(parsed.hostname, "buondua.com") || !new RegExp("/" + albumId + "/").test(parsed.pathname)) continue;
+        if (!hostMatches(parsed.hostname, "buondua.com") || !parsed.pathname.includes("/" + albumId + "/")) continue;
         if (!/\.(?:jpe?g|png|webp)$/i.test(parsed.pathname)) continue;
         addImage(output, url, base);
       }
     }
-    for (const anchor of Array.from(document.querySelectorAll('a[href*="page="]'))) {
-      addPage(output, anchor.getAttribute("href"), base);
-    }
-    const maxPage = Math.max(1, ...Array.from(document.querySelectorAll('a[href*="page="]')).map(anchor => {
+
+    const listedPages = Array.from(document.querySelectorAll('a[href*="page="]')).map(anchor => {
       try { return Number(new URL(anchor.getAttribute("href") || "", base).searchParams.get("page") || 1); }
       catch { return 1; }
-    }));
-    const current = new URL(base);
-    const currentPage = Number(current.searchParams.get("page") || 1);
+    }).filter(page => Number.isFinite(page) && page > 0);
+    const maxPage = Math.max(1, ...listedPages);
+    const currentPage = Math.max(1, Number(pageUrl.searchParams.get("page") || 1));
     if (maxPage > currentPage) {
-      const next = new URL(current);
+      const next = new URL(pageUrl);
       next.searchParams.set("page", String(currentPage + 1));
       addPage(output, next.toString(), base);
     }
     return output;
   }
 
+  let albumCount = 0;
   for (const anchor of Array.from(document.querySelectorAll("a.item-link[href], a.popunder[href], a[href]"))) {
     const url = absolute(anchor.getAttribute("href"), base);
     if (!url) continue;
     const parsed = new URL(url);
     if (!hostMatches(parsed.hostname, "buondua.com")) continue;
     if (/^\/(?:tag\/|hot|collection|search)/i.test(parsed.pathname) || parsed.pathname === "/") continue;
-    if (/-\d+\/?$/.test(parsed.pathname) || /^\/\d+\/?$/.test(parsed.pathname)) addPage(output, url, base);
+    if (albumIdFromPath(parsed.pathname)) {
+      albumCount += 1;
+      addPage(output, url, base);
+    }
   }
+
   for (const anchor of Array.from(document.querySelectorAll('a[href*="start="]'))) {
     addPage(output, anchor.getAttribute("href"), base);
   }
+
+  // The original adapter walks listing offsets in steps of 20 until no albums
+  // remain; do not rely on the page exposing an explicit "next" anchor.
+  if (albumCount > 0) addPage(output, nextOffsetPage(base, "start", BUONDUA_LIST_STEP), base);
   return output;
 }
 
@@ -227,7 +291,7 @@ export async function discoverSexComApiPage(
     const raw = typeof row.uri === "string" ? row.uri : "";
     if (!raw) continue;
     // Absolute API media URIs may use a different CDN. Relative URIs use the
-    // discovered/known Sex.com media host from the original Python adapter.
+    // known Sex.com media host unless the URI already specifies a host.
     addImage(output, raw, SEXCOM_MEDIA_BASE + "/");
   }
   if (rows.length === SEXCOM_PAGE_SIZE && page < MAX_API_PAGES) {
