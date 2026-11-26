@@ -144,7 +144,7 @@ function nextEliteBabesListPage(base: string): string {
   return current.toString();
 }
 
-function parseElitebabes(document: Document, base: string): DiscoveryResult {
+function parseElitebabes(document: Document, base: string, mode: "images" | "galleries"): DiscoveryResult {
   const output = result();
   const contentImage = (raw: string | null): void => {
     const url = absolute(raw, "https://cdn.elitebabes.com/");
@@ -158,7 +158,19 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
 
   const listItems = Array.from(document.querySelectorAll("ul.list-gallery li"));
   if (listItems.length) {
-    for (const item of listItems) {
+    if (mode === "images") {
+      for (const item of listItems) {
+        const image = item.querySelector("img");
+        const raw = image?.getAttribute("src") || image?.getAttribute("data-src") || "";
+        const url = absolute(raw, "https://cdn.elitebabes.com/");
+        if (!url) continue;
+        const parsed = new URL(url);
+        if (hostMatches(parsed.hostname, "cdn.elitebabes.com") && parsed.pathname.includes("/content/")) {
+          addImage(output, url, base);
+        }
+      }
+    } else {
+      for (const item of listItems) {
       const anchor = item.querySelector("a[href]");
       const raw = anchor?.getAttribute("href") || "";
       const url = absolute(raw, base);
@@ -171,6 +183,7 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
       if (["photos", "videos", "models", "tags", "feed"].includes(parts[0]!.toLowerCase())) continue;
       if (parts[0]!.toLowerCase().includes("void(")) continue;
       addPage(output, url, base);
+    }
     }
     for (const anchor of Array.from(document.querySelectorAll('a[href*="/page/"]'))) {
       addPage(output, anchor.getAttribute("href"), base);
@@ -269,13 +282,17 @@ export function isSexComUrl(input: string): boolean {
   try { return hostMatches(new URL(input).hostname.toLowerCase(), "sex.com"); } catch { return false; }
 }
 
-export function discoverSiteSpecificHtml(html: string, baseUrl: string): DiscoveryResult | null {
+export function discoverSiteSpecificHtml(
+  html: string,
+  baseUrl: string,
+  options: { eliteBabesMode?: "images" | "galleries" } = {}
+): DiscoveryResult | null {
   let host: string;
   try { host = new URL(baseUrl).hostname.toLowerCase(); } catch { return null; }
   const { document } = parseHTML(html);
   if (hostMatches(host, "rule34.xxx")) return parseRule34(document, baseUrl);
   if (hostMatches(host, "realbooru.com")) return parseRealbooru(document, baseUrl);
-  if (hostMatches(host, "elitebabes.com")) return parseElitebabes(document, baseUrl);
+  if (hostMatches(host, "elitebabes.com")) return parseElitebabes(document, baseUrl, options.eliteBabesMode === "images" ? "images" : "galleries");
   if (hostMatches(host, "buondua.com")) return parseBuondua(document, baseUrl);
   return null;
 }
