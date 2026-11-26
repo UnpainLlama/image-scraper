@@ -226,6 +226,9 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
         const status = fetched.response.status;
         await fetched.response.body?.cancel();
         if (status !== 403) throw new ScrapeError("PAGE_HTTP_" + status);
+        // Release the HTTP permit before acquiring the Browser Run permit; jobs
+        // configured with concurrency=1 must still be able to switch transports.
+        await fetched.release();
         const rendered = await fetchRenderedHtml(env, jobId, pageUrl, settings.allowedOrigin);
         if (!rendered) throw new ScrapeError("PAGE_HTTP_" + status);
         html = rendered;
