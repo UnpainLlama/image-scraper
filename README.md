@@ -1,14 +1,18 @@
 # Image Scraper
 
-A private Cloudflare-hosted image collection tool. It discovers image files on supplied pages, optionally crawls same-site links, downloads original bytes concurrently to a private R2 bucket, and provides a verified local export followed by job deletion.
+A private, image-only Cloudflare collection tool. It discovers image files on supplied pages, optionally crawls same-site links, downloads original bytes to a private R2 bucket, and provides a verified local export followed by job deletion.
+
+## Runtime
+
+The scraper engine is TypeScript and runs on Cloudflare Workers, Queues, SQLite-backed Durable Objects and R2. It does not require Python, a Docker image, Cloudflare Containers, a Linux VM, or a remote shell. The browser dashboard is the job interface; it does not expose a general-purpose terminal.
 
 ## What it does
 
 1. Accepts a website URL and one or more pages.
-2. Scrapes exact pages or follows same-origin links within a bounded crawl.
+2. Processes the supplied pages and bounded site-specific continuations, or follows generic same-origin links in Crawl mode.
 3. Finds image elements, responsive image sources, linked image files, Open Graph images, CSS backgrounds, and external stylesheets.
 4. Downloads original image bytes using configurable per-job concurrency and per-domain request spacing.
-5. Stores images temporarily in a private R2 bucket.
+5. Streams, validates and hashes images before storing them in the private R2 bucket.
 6. Generates a manifest on request so the files can be copied to a local machine with rclone.
 7. Verifies file sizes and SHA-256 hashes before enabling Clear.
 8. Deletes the R2 job prefix and erases the job Durable Object state.
@@ -17,17 +21,20 @@ A private Cloudflare-hosted image collection tool. It discovers image files on s
 
 The scraper automatically selects an image-only adapter for these supported hosts:
 
-- **Sex.com** — paginated JSON GIF listings, search, and tag results.
-- **Rule34.xxx** — tag/list pages, sample image URLs, and post-page links.
-- **Realbooru.com** — list pagination and original image URLs from image posts.
-- **Elitebabes.com** — gallery listings and full-size gallery images.
-- **Buondua.com** — album listings, album images, and album pagination.
+- **Sex.com** — JSON GIF listings, search and tag endpoints, with bounded page/limit pagination. Relative media URIs use the known Sex.com CDN; absolute media URIs keep their supplied host.
+- **Rule34.xxx** — tag/list pages, thumbnail-to-sample image URLs, and 42-item offset pagination. A directly supplied post page can resolve its original image.
+- **Realbooru.com** — image post links, original image extraction from post pages, fallback scanning for non-thumbnail `/images/` links, and 42-item offset pagination.
+- **Elitebabes.com** — gallery listings, sequential list pagination, and full-size gallery images. Thumbnail variants are excluded from gallery extraction.
+- **Buondua.com** — album listings, album-scoped image extraction, 20-item listing offsets, and numbered album pages.
+- **Other static websites** — generic HTML and CSS image discovery.
 
-Use **Crawl** mode when starting from a listing page that links to galleries, posts, albums, or additional listing pages. Exact mode processes only the supplied seed page. These adapters do not add video discovery or downloading. Site layouts and APIs can change, so live behavior may differ from the fixture tests.
+**Exact mode** processes the supplied seed pages plus bounded continuations explicitly produced by a supported site adapter (such as an album page or pagination offset). It does not follow arbitrary links. **Crawl mode** additionally follows generic same-origin links up to the configured depth.
+
+Site layouts and private APIs can change. The fixture tests simulate known HTML/API responses; they do not guarantee that every live site will accept a request or keep the same markup.
 
 ## Design rules
 
-- Image files only. No text/article extraction or website archiving.
+- Image files only. No video downloading, Pornhub adapter, text/article extraction or website archiving.
 - No conversion, resizing, recompression, or re-encoding.
 - No D1 database and no permanent job history.
 - Task URLs and depth are stored in the per-job Durable Object until completion and job clear. Queue messages contain only job IDs and task IDs. URLs, filenames and R2 keys are never written to application logs.
@@ -37,27 +44,34 @@ Use **Crawl** mode when starting from a listing page that links to galleries, po
 - Dashboard access uses a password-only login. The password and session-signing key are Worker secrets, never application files.
 - API requests require a signed, HTTP-only session cookie. Sessions expire after 12 hours, and login attempts are throttled to five per 15-minute window.
 - Application logging and Cloudflare Worker observability are disabled in wrangler.jsonc.
+- The scraper does not provide Tor/SOCKS routing, pasted browser cookies, a general shell, or a mechanism to bypass logins, CAPTCHAs, paywalls or access controls.
 
-## Defaults
+## Free-tier defaults
+
+The default job settings are deliberately modest for a Cloudflare Workers Free account:
 
 | Setting | Default |
 |---|---:|
 | Maximum image size | 50 MiB |
-| R2 storage budget per job | 8 GiB |
-| Concurrent work per job | 5 (configurable 1–20) |
+| R2 storage budget per job | 1 GiB |
+| Concurrent work per job | 3 (configurable 1–5) |
 | Per-domain minimum request interval | 1 second |
 | Maximum crawl depth | 3 |
-| Maximum pages | 500 |
+| Maximum pages per job | 100 |
 | Maximum seed pages | 50 |
-| Maximum discovered images | 50,000 |
-| Queue retention | 14 days (Paid; Free is fixed at 24 hours) |
+| Maximum discovered images per job | 2,000 |
+| Queue retention | 24 hours (Free); up to 14 days (Paid) |
 | Job abandonment threshold | 30 days idle |
 | Abandonment grace period | 7 days |
 | Temporary object expiry | 1 day (`tmp/` only) |
 
+These are application limits, not a guarantee that every website or job will fit within every Cloudflare quota. Queue retries consume additional Queue operations; Browser Run is limited to 10 minutes/day on Workers Free. R2 includes 10 GB-month of Standard storage, 1 million Class A operations and 10 million Class B operations per month; usage above those allowances is billable. Export and clear completed jobs to keep R2 usage low.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) before deploying.
+
 ## Quick start
 
-Read DEPLOYMENT.md before deploying. Cloudflare resources (R2 bucket, queues and Durable Object namespace) must be provisioned in your account.
+Cloudflare resources (the existing R2 bucket, two Queues and Durable Object namespace) must be present in your account.
 
     npm install
     npm run typecheck
@@ -86,7 +100,7 @@ Upload verification-report.json in the dashboard. Clear is enabled only after th
 - Queue messages contain only `{ jobId, taskId }`. The per-job Durable Object stores the task URL and depth and is the source of truth.
 - Paused queue hints are acknowledged. On resume, pending tasks are republished. The alarm reconciler republishes tasks whose queue hint was lost/exhausted or whose worker lease expired; retention is no longer the task store.
 - The application blocks local hostnames, IP-literal URLs, unusual ports, and unsafe redirect destinations. DNS resolution is performed by the Cloudflare runtime; this application does not implement a separate DNS pinning resolver.
-- Browser Run is used only as a fallback for pages that appear JavaScript-rendered. A website can still change behavior after rendering; the scraper does not bypass logins, CAPTCHAs, paywalls, or access controls.
+- Browser Run is used only as a fallback for pages that appear JavaScript-rendered. If Browser Run is unavailable or its free allowance is exhausted, the scraper continues with static HTML; some dynamic sites may return fewer images.
 - Completed job objects have no blanket lifecycle expiry. The Durable Object marks jobs abandoned after 30 days without user action or task progress, shows a 7-day grace period, then runs resumable Clear. This is the only automatic deletion of final job objects. Only `tmp/` objects expire automatically after one day; R2 lifecycle deletion is not immediate.
 - Clearing removes application job data. It cannot erase Cloudflare platform-level Access, request, billing, or operational records, nor logs held by the target website.
 
