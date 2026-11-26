@@ -545,7 +545,9 @@ export default {
         const code = safeErrorCode(error);
         const status = error instanceof ScrapeError && [
           "INVALID_JSON", "REQUEST_TOO_LARGE", "INVALID_URL", "INVALID_SCRAPE_MODE",
-          "SEED_PAGE_OUTSIDE_WEBSITE", "TOO_MANY_SEED_PAGES", "PRIVATE_OR_LOCAL_HOST_BLOCKED", "UNSUPPORTED_PROTOCOL"
+          "SEED_PAGE_OUTSIDE_WEBSITE", "TOO_MANY_SEED_PAGES", "PRIVATE_OR_LOCAL_HOST_BLOCKED", "UNSUPPORTED_PROTOCOL",
+          "INVALID_SITE", "TARGET_REQUIRED", "STATIC_MODE_REQUIRES_URL", "SITE_HOST_MISMATCH",
+          "SINGLE_ITEM_URL_NOT_SUPPORTED", "FREE_TIER_PAGE_LIMIT", "ROBOTS_DISALLOWED"
         ].includes(code) ? 400 : 500;
         return json({ error: code }, status);
       }
