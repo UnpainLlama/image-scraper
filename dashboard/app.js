@@ -169,7 +169,7 @@
     flow.step = "probing";
     $("terminal-state").textContent = "probing";
     disablePrompt("Checking target");
-    appendLine("Preparing target and checking robots policy / HTTP response…", "muted");
+    appendLine("Checking target HTTP response…", "muted");
     try {
       flow.prepared = await api("/api/terminal/probe", {
         method: "POST",
@@ -333,7 +333,7 @@
 
     if (flow.step === "probeFailed") {
       if (["r", "retry", ""].includes(value)) await prepareTarget();
-      else if (["b", "back"].includes(value)) advanceAfterTarget();
+      else if (["b", "back"].includes(value)) startNewFlow();
       else if (["q", "quit", "cancel"].includes(value)) startNewFlow();
       else setPrompt("Retry [R], change target [B], or cancel [Q]", "", "R");
       return;
@@ -344,7 +344,7 @@
         appendLine("Cancelled. No job was created.", "muted");
         startNewFlow();
       } else if (["b", "back"].includes(value)) {
-        advanceAfterTarget();
+        startNewFlow();
       } else if (["", "y", "yes", "start"].includes(value)) {
         await startJob();
       } else {

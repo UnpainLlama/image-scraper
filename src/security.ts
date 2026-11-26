@@ -1,10 +1,7 @@
 import { ScrapeError } from "./http";
-import type { Env, FetchResult, RobotsPolicy } from "./types";
+import type { Env, FetchResult } from "./types";
 
 const USER_AGENT = "ImageScraperBot/1.0 (+https://github.com/UnpainLlama/image-scraper)";
-const ROBOTS_TTL_MS = 10 * 60 * 1000;
-const ROBOTS_MAX_BYTES = 512 * 1024;
-const robotsCache = new Map<string, { expiresAt: number; policy: RobotsPolicy }>();
 
 function blockedHostname(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -46,109 +43,6 @@ async function fetchRawSafe(input: URL, headers?: HeadersInit): Promise<{ respon
     return { response, finalUrl: current };
   }
   throw new ScrapeError("TOO_MANY_REDIRECTS");
-}
-
-export async function readRobotsResponse(response: Response, maximumBytes = ROBOTS_MAX_BYTES): Promise<string | null> {
-  if (response.status !== 200 || !response.body) {
-    await response.body?.cancel();
-    return null;
-  }
-  const declared = Number(response.headers.get("content-length") || "0");
-  if (declared > maximumBytes) {
-    await response.body.cancel();
-    throw new ScrapeError("ROBOTS_TOO_LARGE");
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total > maximumBytes) {
-        await reader.cancel();
-        throw new ScrapeError("ROBOTS_TOO_LARGE");
-      }
-      chunks.push(part.value);
-    }
-  } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(bytes);
-}
-
-function wildcardPattern(pattern: string): RegExp {
-  const ending = pattern.endsWith("$");
-  const body = ending ? pattern.slice(0, -1) : pattern;
-  const escaped = body.replace(/[.+?^$()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp("^" + escaped + (ending ? "$" : ".*"));
-}
-
-export function parseRobots(text: string): RobotsPolicy {
-  const groups: Array<{ agents: string[]; rules: Array<{ allow: boolean; path: string }>; delay: number }> = [];
-  let current: { agents: string[]; rules: Array<{ allow: boolean; path: string }>; delay: number } | null = null;
-  let hasDirectives = false;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = (rawLine.split("#", 1)[0] || "").trim();
-    if (!line) continue;
-    const separator = line.indexOf(":");
-    if (separator < 0) continue;
-    const name = line.slice(0, separator).trim().toLowerCase();
-    const value = line.slice(separator + 1).trim();
-    if (name === "user-agent") {
-      if (!current || hasDirectives) {
-        current = { agents: [], rules: [], delay: 0 };
-        groups.push(current);
-        hasDirectives = false;
-      }
-      current.agents.push(value.toLowerCase());
-      continue;
-    }
-    if (!current) continue;
-    hasDirectives = true;
-    if ((name === "allow" || name === "disallow") && value) current.rules.push({ allow: name === "allow", path: value });
-    else if (name === "crawl-delay") {
-      const seconds = Number(value);
-      if (Number.isFinite(seconds) && seconds >= 0) current.delay = Math.max(current.delay, Math.min(30, seconds) * 1000);
-    }
-  }
-  const matching = groups.filter(group => group.agents.some(agent => agent === "*" || USER_AGENT.toLowerCase().includes(agent)));
-  return {
-    rules: matching.flatMap(group => group.rules),
-    crawlDelayMs: matching.reduce((maximum, group) => Math.max(maximum, group.delay), 0)
-  };
-}
-
-export function isRobotsAllowed(pathAndQuery: string, policy: RobotsPolicy): boolean {
-  let winning: { allow: boolean; length: number } | null = null;
-  for (const rule of policy.rules) {
-    if (!wildcardPattern(rule.path).test(pathAndQuery)) continue;
-    const specificity = rule.path.replace(/[*$]/g, "").length;
-    if (!winning || specificity > winning.length || (specificity === winning.length && rule.allow)) winning = { allow: rule.allow, length: specificity };
-  }
-  return winning ? winning.allow : true;
-}
-
-async function getRobotsPolicy(url: URL): Promise<RobotsPolicy> {
-  const key = url.origin;
-  const cached = robotsCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached.policy;
-  let policy: RobotsPolicy = { rules: [], crawlDelayMs: 0 };
-  try {
-    const result = await fetchRawSafe(new URL("/robots.txt", url.origin), { accept: "text/plain,*/*;q=0.1" });
-    const text = await readRobotsResponse(result.response);
-    if (text !== null) policy = parseRobots(text);
-    else if (result.response.status === 401 || result.response.status === 403 || result.response.status >= 500) {
-      policy = { rules: [{ allow: false, path: "/" }], crawlDelayMs: 0 };
-    }
-  } catch {
-    policy = { rules: [{ allow: false, path: "/" }], crawlDelayMs: 0 };
-  }
-  if (robotsCache.size > 1000) robotsCache.delete(robotsCache.keys().next().value as string);
-  robotsCache.set(key, { expiresAt: Date.now() + ROBOTS_TTL_MS, policy });
-  return policy;
 }
 
 function escapeBrowserPattern(value: string): string {
@@ -195,9 +89,7 @@ export async function acquireBrowserPagePermit(
 ): Promise<() => Promise<void>> {
   const target = validatePublicUrl(input);
   if (target.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
-  const policy = await getRobotsPolicy(target);
-  if (!isRobotsAllowed(target.pathname + target.search, policy)) throw new ScrapeError("ROBOTS_DISALLOWED");
-  const permitId = await acquire(env, jobId, target.hostname, policy.crawlDelayMs);
+  const permitId = await acquire(env, jobId, target.hostname, 0);
   return async () => release(env, jobId, permitId);
 }
 
@@ -207,9 +99,7 @@ export async function fetchForJob(env: Env, jobId: string, input: string, header
   try {
     for (let redirects = 0; redirects <= 5; redirects++) {
       if (allowedOrigin && current.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
-      const policy = await getRobotsPolicy(current);
-      if (!isRobotsAllowed(current.pathname + current.search, policy)) throw new ScrapeError("ROBOTS_DISALLOWED");
-      const permitId = await acquire(env, jobId, current.hostname, policy.crawlDelayMs);
+      const permitId = await acquire(env, jobId, current.hostname, 0);
       permits.push(permitId);
       const response = await fetch(current.toString(), {
         method: "GET", redirect: "manual",
@@ -254,11 +144,6 @@ export interface PublicUrlProbe {
 
 export async function probePublicUrl(input: string): Promise<PublicUrlProbe> {
   const target = validatePublicUrl(input);
-  const policy = await getRobotsPolicy(target);
-  if (!isRobotsAllowed(target.pathname + target.search, policy)) {
-    throw new ScrapeError("ROBOTS_DISALLOWED");
-  }
-
   const result = await fetchRawSafe(target, {
     accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5"
   });

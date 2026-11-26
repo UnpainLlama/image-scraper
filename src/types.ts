@@ -59,7 +59,6 @@ export interface JobSnapshot {
   activePermits?: number;
 }
 export interface FetchResult { response: Response; finalUrl: URL; permitId: string; release: () => Promise<void>; }
-export interface RobotsPolicy { rules: Array<{ allow: boolean; path: string }>; crawlDelayMs: number; }
 export interface ImageCandidate { url: string; }
 export interface DiscoveryResult {
   images: ImageCandidate[];
