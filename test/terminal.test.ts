@@ -41,6 +41,15 @@ describe("terminal target resolver", () => {
     expect(resolveTerminalTarget("buondua", "12345").siteUrl).toBe("https://buondua.com/12345");
   });
 
+  it("recognizes bare host URLs with query strings and normalizes HTTP to HTTPS", () => {
+    const sex = resolveTerminalTarget("auto", "sex.com?search=landscape");
+    expect(new URL(sex.siteUrl).protocol).toBe("https:");
+    expect(new URL(sex.siteUrl).searchParams.get("search")).toBe("landscape");
+
+    const staticTarget = resolveTerminalTarget("static", "http://example.org/gallery");
+    expect(staticTarget.siteUrl).toBe("https://example.org/gallery");
+  });
+
   it("auto-detects supported hostnames and falls back to static HTML for other URLs", () => {
     expect(resolveTerminalTarget("auto", "https://rule34.xxx/index.php?page=post&s=list").site).toBe("rule34");
     expect(resolveTerminalTarget("auto", "https://example.org/gallery/").site).toBe("static");
