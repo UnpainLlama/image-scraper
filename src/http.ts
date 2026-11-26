@@ -48,6 +48,20 @@ export function safeErrorCode(error: unknown): string {
   return "WORKER_ERROR";
 }
 
+/**
+ * Convert an unexpected exception at a known processing stage into a safe,
+ * retryable task failure. Log only the stage code and error class; never log
+ * source URLs, query strings, response bodies, or arbitrary exception messages.
+ */
+export function asStageFailure(error: unknown, code: string): ScrapeError {
+  if (error instanceof ScrapeError) return error;
+  const safeCode = /^[A-Z0-9_]{1,50}$/.test(code) ? code : "WORKER_ERROR";
+  const candidateName = error instanceof Error ? error.name : "UnknownError";
+  const errorName = /^[A-Za-z][A-Za-z0-9]{0,39}$/.test(candidateName) ? candidateName : "UnknownError";
+  console.error("pscraper_unexpected_stage_error", JSON.stringify({ code: safeCode, errorName }));
+  return new ScrapeError(safeCode, true);
+}
+
 export function parseRetryAfter(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
