@@ -345,8 +345,10 @@
         startNewFlow();
       } else if (["b", "back"].includes(value)) {
         advanceAfterTarget();
-      } else {
+      } else if (["", "y", "yes", "start"].includes(value)) {
         await startJob();
+      } else {
+        setPrompt("Start this scrape? [Enter / B / Q]", "Press Enter or type Y to start. B changes target; Q cancels.", "Enter");
       }
     }
   });
