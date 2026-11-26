@@ -70,65 +70,165 @@ export function imageObjectKey(jobId: string, source: URL, format: ImageFormat, 
   return ["jobs", safePathSegment(jobId), domain, ...safeDirectories, filename].join("/");
 }
 
+const R2_MULTIPART_PART_BYTES = 5 * 1024 * 1024;
+
+function concatenateChunks(chunks: Uint8Array[], length: number): Uint8Array {
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
 export async function putStreamAndHash(
   bucket: R2Bucket,
   temporaryKey: string,
   source: ReadableStream<Uint8Array>,
   maxBytes: number,
   reserve: (bytes: number) => Promise<boolean>,
-  sourceContentType: string
+  sourceContentType: string,
+  sourceLength?: number
 ): Promise<StreamDigestResult> {
   const hasher = sha256.create();
   let size = 0;
   let reservedBytes = 0;
   const prefixParts: Uint8Array[] = [];
   let prefixLength = 0;
-  let digest = "";
-
   const reservationBatchBytes = 256 * 1024;
-  let pendingChunks: Uint8Array[] = [];
-  let pendingBytes = 0;
-
-  const transformed = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-    async transform(chunk, controller) {
-      const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-      if (size + bytes.byteLength > maxBytes) throw new ScrapeError("FILE_TOO_LARGE");
-      size += bytes.byteLength;
-      hasher.update(bytes);
-      if (prefixLength < 512) {
-        const part = bytes.slice(0, 512 - prefixLength);
-        prefixParts.push(part);
-        prefixLength += part.byteLength;
-      }
-      pendingChunks.push(bytes);
-      pendingBytes += bytes.byteLength;
-      if (pendingBytes >= reservationBatchBytes) {
-        if (!await reserve(pendingBytes)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
-        reservedBytes += pendingBytes;
-        for (const pending of pendingChunks) controller.enqueue(pending);
-        pendingChunks = [];
-        pendingBytes = 0;
-      }
-    },
-    async flush(controller) {
-      if (pendingBytes > 0) {
-        if (!await reserve(pendingBytes)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
-        reservedBytes += pendingBytes;
-        for (const pending of pendingChunks) controller.enqueue(pending);
-      }
-      digest = toHex(hasher.digest());
-    }
-  }));
-
-  await bucket.put(temporaryKey, transformed, {
+  const putOptions: R2PutOptions = {
     httpMetadata: { contentType: sourceContentType || "application/octet-stream" }
-  });
+  };
 
-  const prefix = new Uint8Array(prefixLength);
-  let offset = 0;
-  for (const part of prefixParts) {
-    prefix.set(part, offset);
-    offset += part.byteLength;
+  const rememberChunk = (chunk: Uint8Array): void => {
+    if (size + chunk.byteLength > maxBytes) throw new ScrapeError("FILE_TOO_LARGE");
+    size += chunk.byteLength;
+    hasher.update(chunk);
+    if (prefixLength < 512) {
+      const prefix = chunk.slice(0, 512 - prefixLength);
+      prefixParts.push(prefix);
+      prefixLength += prefix.byteLength;
+    }
+  };
+
+  if (sourceLength !== undefined && Number.isSafeInteger(sourceLength) && sourceLength >= 0) {
+    let pendingChunks: Uint8Array[] = [];
+    let pendingBytes = 0;
+    const transformed = source.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      async transform(chunk, controller) {
+        const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+        rememberChunk(bytes);
+        pendingChunks.push(bytes);
+        pendingBytes += bytes.byteLength;
+        if (pendingBytes >= reservationBatchBytes) {
+          if (!await reserve(pendingBytes)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
+          reservedBytes += pendingBytes;
+          for (const pending of pendingChunks) controller.enqueue(pending);
+          pendingChunks = [];
+          pendingBytes = 0;
+        }
+      },
+      async flush(controller) {
+        if (pendingBytes > 0) {
+          if (!await reserve(pendingBytes)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
+          reservedBytes += pendingBytes;
+          for (const pending of pendingChunks) controller.enqueue(pending);
+        }
+      }
+    }));
+
+    // R2 rejects a plain TransformStream because its readable length is unknown.
+    // FixedLengthStream restores the response Content-Length and rejects short
+    // or overlong source bodies before R2 can store a corrupt temporary object.
+    const fixedLength = new FixedLengthStream(sourceLength);
+    const pipePromise = transformed.pipeTo(fixedLength.writable);
+    await Promise.all([
+      bucket.put(temporaryKey, fixedLength.readable, putOptions),
+      pipePromise
+    ]);
+
+    return {
+      size,
+      sha256: toHex(hasher.digest()),
+      prefix: concatenateChunks(prefixParts, prefixLength),
+      reservedBytes
+    };
   }
-  return { size, sha256: digest, prefix, reservedBytes };
+
+  // If the origin omits Content-Length, R2 cannot accept an arbitrary stream.
+  // Keep memory bounded by uploading complete 5 MiB parts as they arrive.
+  // Small unknown-length files are stored as a fixed-size Uint8Array PUT.
+  const reader = source.getReader();
+  let unreservedBytes = 0;
+  let partChunks: Uint8Array[] = [];
+  let partBytes = 0;
+  const multipartState: { upload: R2MultipartUpload | null } = { upload: null };
+  const uploadedParts: R2UploadedPart[] = [];
+
+  const reservePending = async (flush = false): Promise<void> => {
+    if (unreservedBytes >= reservationBatchBytes || (flush && unreservedBytes > 0)) {
+      const amount = unreservedBytes;
+      if (!await reserve(amount)) throw new ScrapeError("STORAGE_BUDGET_REACHED");
+      reservedBytes += amount;
+      unreservedBytes = 0;
+    }
+  };
+
+  const uploadPart = async (): Promise<void> => {
+    if (!partBytes) return;
+    await reservePending(true);
+    const body = concatenateChunks(partChunks, partBytes);
+    if (!multipartState.upload) multipartState.upload = await bucket.createMultipartUpload(temporaryKey, {
+      httpMetadata: putOptions.httpMetadata
+    });
+    const upload = multipartState.upload;
+    const uploaded = await upload.uploadPart(uploadedParts.length + 1, body);
+    uploadedParts.push(uploaded);
+    partChunks = [];
+    partBytes = 0;
+  };
+
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      const bytes = next.value instanceof Uint8Array ? next.value : new Uint8Array(next.value);
+      rememberChunk(bytes);
+      unreservedBytes += bytes.byteLength;
+      await reservePending();
+
+      let offset = 0;
+      while (offset < bytes.byteLength) {
+        const take = Math.min(R2_MULTIPART_PART_BYTES - partBytes, bytes.byteLength - offset);
+        partChunks.push(bytes.subarray(offset, offset + take));
+        partBytes += take;
+        offset += take;
+        if (partBytes === R2_MULTIPART_PART_BYTES) await uploadPart();
+      }
+    }
+
+    await reservePending(true);
+    const upload = multipartState.upload;
+    if (upload) {
+      if (partBytes > 0) await uploadPart();
+      await upload.complete(uploadedParts);
+      multipartState.upload = null;
+    } else if (size > 0) {
+      await bucket.put(temporaryKey, concatenateChunks(partChunks, partBytes), putOptions);
+    }
+  } catch (error) {
+    const upload = multipartState.upload;
+    if (upload) await upload.abort().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+
+  return {
+    size,
+    sha256: toHex(hasher.digest()),
+    prefix: concatenateChunks(prefixParts, prefixLength),
+    reservedBytes
+  };
 }

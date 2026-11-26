@@ -314,13 +314,18 @@ async function processImage(jobId: string, taskId: string, payload: StoredTaskPa
       throw new ScrapeError("IMAGE_HTTP_" + fetched.response.status, true, parseRetryAfter(fetched.response.headers.get("retry-after")));
     }
     if (!fetched.response.ok) throw new ScrapeError("IMAGE_HTTP_" + fetched.response.status);
-    const lengthHeader = Number(fetched.response.headers.get("content-length") || "0");
-    if (lengthHeader > settings.maxFileBytes) throw new ScrapeError("FILE_TOO_LARGE");
+    const lengthHeader = fetched.response.headers.get("content-length")?.trim() || "";
+    const sourceLength = /^\\d+$/.test(lengthHeader) ? Number(lengthHeader) : undefined;
+    if (sourceLength !== undefined && (!Number.isSafeInteger(sourceLength) || sourceLength > settings.maxFileBytes)) {
+      throw new ScrapeError("FILE_TOO_LARGE");
+    }
     if (!fetched.response.body) throw new ScrapeError("EMPTY_IMAGE_RESPONSE");
     const streamResult = await imageStage("IMAGE_STREAM_WRITE_FAILED", () =>
       putStreamAndHash(env.IMAGES, temporaryKey, fetched.response.body as ReadableStream<Uint8Array>,
-        settings.maxFileBytes, bytes => reserveBytes(env, jobId, permitId, bytes),
-        fetched.response.headers.get("content-type") || "application/octet-stream")
+        settings.maxFileBytes,
+        bytes => imageStage("BYTE_RESERVATION_FAILED", () => reserveBytes(env, jobId, permitId, bytes)),
+        fetched.response.headers.get("content-type") || "application/octet-stream",
+        sourceLength)
     );
     const format = sniffImageFormat(streamResult.prefix);
     if (!format || streamResult.size < 1) throw new ScrapeError("NOT_AN_IMAGE");
