@@ -186,7 +186,7 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
   if (!settingsResponse.ok) throw new ScrapeError("JOB_STATE_UNAVAILABLE", true, 3);
   const settings = await settingsResponse.json() as JobSettings;
   const pageUrl = validatePublicUrl(payload.url, settings.allowedOrigin).toString();
-  let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[] };
+  let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[]; followPages?: boolean };
   if (isSexComUrl(pageUrl)) {
     discovered = await discoverSexComApiPage(pageUrl, async apiUrl => {
       const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" }, "https://www.sex.com");
@@ -236,12 +236,19 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
     taskId: await sha256Text("image|" + url), url, urlHash: await sha256Text(url)
   })));
   const pageItems: TaskRegistration[] = [];
-  if (settings.mode === "crawl" && Number(payload.depth || 0) < settings.maxDepth) {
+  const currentDepth = Number(payload.depth || 0);
+  const followAdapterPages = discovered.followPages === true;
+  const mayFollowGenericPages = settings.mode === "crawl" && currentDepth < settings.maxDepth;
+  if (followAdapterPages || mayFollowGenericPages) {
     const uniquePages = Array.from(new Set(discovered.pages)).slice(0, 2000);
     for (const url of uniquePages) {
       try {
         if (new URL(url).origin !== settings.allowedOrigin) continue;
-        pageItems.push({ taskId: await sha256Text("page|" + url), url, urlHash: await sha256Text(url), depth: Number(payload.depth || 0) + 1 });
+        // Site-adapter pages are bounded album/post/pagination continuations,
+        // so they remain available in exact mode and do not consume generic
+        // crawl depth. Generic links still obey the user's depth setting.
+        const depth = followAdapterPages ? currentDepth : currentDepth + 1;
+        pageItems.push({ taskId: await sha256Text("page|" + url), url, urlHash: await sha256Text(url), depth });
       } catch { /* Invalid discovered links are ignored, never sent to the DO. */ }
     }
   }
