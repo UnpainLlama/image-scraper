@@ -31,7 +31,7 @@
     $("site-url").value = config.siteUrl || "";
     $("pages").value = typeof config.pages === "string" ? config.pages : "";
     $("mode").value = config.mode === "crawl" ? "crawl" : "exact";
-    $("concurrency").value = String(Math.min(20, Math.max(1, Number(config.concurrency) || 5)));
+    $("concurrency").value = String(Math.min(5, Math.max(1, Number(config.concurrency) || 3)));
     $("concurrency-value").textContent = $("concurrency").value;
     $("depth").value = String(Math.min(10, Math.max(0, Number(config.maxDepth) || 0)));
     $("depth-field").hidden = $("mode").value !== "crawl";
