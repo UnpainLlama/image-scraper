@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { isRobotsAllowed, parseRobots, readRobotsResponse, validatePublicUrl } from "../src/security";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { probePublicUrl, validatePublicUrl } from "../src/security";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("URL safety", () => {
   it("accepts public HTTP and HTTPS URLs", () => {
@@ -15,47 +19,30 @@ describe("URL safety", () => {
   });
 });
 
-describe("robots policy", () => {
-  it("applies the most specific rule and prefers Allow on a tie", () => {
-    const policy = parseRobots("User-agent: *\nDisallow: /private\nAllow: /private/public");
-    expect(isRobotsAllowed("/private/public/image.jpg", policy)).toBe(true);
-    expect(isRobotsAllowed("/private/account", policy)).toBe(false);
-    expect(isRobotsAllowed("/gallery", policy)).toBe(true);
-  });
-
-  it("reads crawl-delay", () => {
-    expect(parseRobots("User-agent: *\nCrawl-delay: 2").crawlDelayMs).toBe(2000);
-  });
-
-  it("cancels a non-success robots response without consuming it", async () => {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({
-      cancel() { cancelled = true; }
-    });
-    expect(await readRobotsResponse(new Response(body, { status: 404 }))).toBeNull();
-    expect(cancelled).toBe(true);
-  });
-
-  it("enforces the Content-Length robots cap and cancels the body", async () => {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(new Uint8Array([1, 2])); },
-      cancel() { cancelled = true; }
-    });
-    await expect(readRobotsResponse(new Response(body, {
+describe("target probe", () => {
+  it("probes the selected page directly without requesting robots.txt", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response("<html></html>", {
       status: 200,
-      headers: { "content-length": "100" }
-    }), 10)).rejects.toThrow("ROBOTS_TOO_LARGE");
-    expect(cancelled).toBe(true);
+      headers: { "content-type": "text/html; charset=utf-8" }
+    }));
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const result = await probePublicUrl("https://example.com/gallery?page=2");
+
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe("https://example.com/gallery?page=2");
   });
 
-  it("enforces the streamed robots cap when Content-Length is absent", async () => {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(new Uint8Array([1, 2, 3, 4, 5, 6])); },
-      cancel() { cancelled = true; }
-    });
-    await expect(readRobotsResponse(new Response(body), 5)).rejects.toThrow("ROBOTS_TOO_LARGE");
-    expect(cancelled).toBe(true);
+  it("returns the target HTTP status rather than a robots-policy error", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => new Response("Forbidden", { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const result = await probePublicUrl("https://example.com/gallery");
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
