@@ -1,6 +1,6 @@
 # Image Scraper
 
-A private, image-only Cloudflare collection tool. It discovers image files on supplied pages, optionally crawls same-site links, downloads original bytes to a private R2 bucket, and provides a verified local export followed by job deletion.
+A private Cloudflare collection tool for image formats, including animated GIFs. It discovers media files on supplied pages, optionally crawls same-site links, downloads original bytes to a private R2 bucket, and provides a verified local export followed by job deletion.
 
 ## Runtime
 
@@ -10,16 +10,16 @@ The scraper engine is TypeScript and runs on Cloudflare Workers, Queues, SQLite-
 
 1. Accepts a website URL and one or more pages.
 2. Processes the supplied pages and bounded site-specific continuations, or follows generic same-origin links in Crawl mode.
-3. Finds image elements, responsive image sources, linked image files, Open Graph images, CSS backgrounds, and external stylesheets.
-4. Downloads original image bytes using configurable per-job concurrency and per-domain request spacing.
-5. Streams, validates and hashes images before storing them in the private R2 bucket.
+3. Finds image elements, responsive image sources, linked image files (including GIFs), Open Graph images, CSS backgrounds, and external stylesheets.
+4. Downloads original image and GIF bytes using configurable per-job concurrency and per-domain request spacing.
+5. Streams, validates and hashes each file by its content signature before storing it in the private R2 bucket; GIF animation is preserved.
 6. Generates a manifest on request so the files can be copied to a local machine with rclone.
 7. Verifies file sizes and SHA-256 hashes before enabling Clear.
 8. Deletes the R2 job prefix and erases the job Durable Object state.
 
 ## Site-specific discovery
 
-The scraper automatically selects an image-only adapter for these supported hosts:
+The scraper automatically selects a supported image adapter for these hosts. All adapters can store GIF media when present:
 
 - **Sex.com** — JSON GIF listings, search and tag endpoints, with bounded page/limit pagination. Relative media URIs use the known Sex.com CDN; absolute media URIs keep their supplied host.
 - **Rule34.xxx** — tag/list pages, thumbnail-to-sample image URLs, and 42-item offset pagination. A directly supplied post page can resolve its original image.
@@ -34,7 +34,7 @@ Site layouts and private APIs can change. The fixture tests simulate known HTML/
 
 ## Design rules
 
-- Image files only. No video downloading, Pornhub adapter, text/article extraction or website archiving.
+- Image formats only, including animated GIFs. Video downloading, Pornhub adapters, text/article extraction and website archiving are not supported.
 - No conversion, resizing, recompression, or re-encoding.
 - No D1 database and no permanent job history.
 - Task URLs and depth are stored in the per-job Durable Object until completion and job clear. Queue messages contain only job IDs and task IDs. URLs, filenames and R2 keys are never written to application logs.
