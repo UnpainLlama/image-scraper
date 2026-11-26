@@ -24,7 +24,7 @@ The scraper automatically selects an image-only adapter for these supported host
 - **Sex.com** — JSON GIF listings, search and tag endpoints, with bounded page/limit pagination. Relative media URIs use the known Sex.com CDN; absolute media URIs keep their supplied host.
 - **Rule34.xxx** — tag/list pages, thumbnail-to-sample image URLs, and 42-item offset pagination. A directly supplied post page can resolve its original image.
 - **Realbooru.com** — image post links, original image extraction from post pages, fallback scanning for non-thumbnail `/images/` links, and 42-item offset pagination.
-- **Elitebabes.com** — gallery listings, sequential list pagination, and full-size gallery images. Thumbnail variants are excluded from gallery extraction.
+- **Elitebabes.com** — selectable list-thumbnail mode or full-size gallery mode, with sequential list pagination. Gallery mode excludes thumbnail variants.
 - **Buondua.com** — album listings, album-scoped image extraction, 20-item listing offsets, and numbered album pages.
 - **Other static websites** — generic HTML and CSS image discovery.
 
