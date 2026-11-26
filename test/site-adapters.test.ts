@@ -2,13 +2,23 @@ import { describe, expect, it } from "vitest";
 import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl } from "../src/site-adapters";
 
 describe("image-only source adapters", () => {
-  it("resolves Rule34 sample image URLs from listing thumbnails", () => {
+  it("resolves Rule34 sample image URLs and strips cache query strings", () => {
     const result = discoverSiteSpecificHtml(
-      '<span class="thumb"><a href="/index.php?page=post&s=view&id=123"><img src="//img.rule34.xxx/thumbnails/ab/cd/thumbnail_hash.jpg"></a></span>',
+      '<span class="thumb"><a href="/index.php?page=post&s=view&id=123"><img src="//img.rule34.xxx/thumbnails/ab/cd/thumbnail_hash.jpg?cache=1"></a></span>',
       "https://rule34.xxx/index.php?page=post&s=list&tags=test"
     );
     expect(result?.images.map(item => item.url)).toContain("https://img.rule34.xxx/samples/ab/cd/sample_hash.jpg");
     expect(result?.followPages).toBe(true);
+  });
+
+  it("continues Rule34 listing offsets by 42 when the page has no explicit next link", () => {
+    const result = discoverSiteSpecificHtml(
+      '<span class="thumb"><a href="/index.php?page=post&s=view&id=123"><img src="/thumbnails/thumbnail_a.jpg"></a></span>',
+      "https://rule34.xxx/index.php?page=post&s=list&tags=test&pid=84"
+    );
+    expect(result?.pages).toEqual([
+      "https://rule34.xxx/index.php?page=post&s=list&tags=test&pid=126"
+    ]);
   });
 
   it("resolves the original Rule34 image when a post page is supplied", () => {
@@ -19,36 +29,36 @@ describe("image-only source adapters", () => {
     expect(result?.images.map(item => item.url)).toEqual(["https://img.rule34.xxx/images/ab/cd/original.jpg"]);
   });
 
-  it("retains Rule34 listing pagination without crawling each post twice", () => {
+  it("does not enqueue another Rule34 page for an empty listing", () => {
     const result = discoverSiteSpecificHtml(
-      '<a href="/index.php?page=post&s=list&tags=test&pid=42">next</a>',
-      "https://rule34.xxx/index.php?page=post&s=list&tags=test"
+      '<div class="empty">No posts</div>',
+      "https://rule34.xxx/index.php?page=post&s=list&tags=test&pid=126"
     );
-    expect(result?.pages).toContain("https://rule34.xxx/index.php?page=post&s=list&tags=test&pid=42");
-    expect(result?.pages.some(url => url.includes("s=view"))).toBe(false);
+    expect(result?.pages).toEqual([]);
+    expect(result?.images).toEqual([]);
   });
 
-  it("follows Realbooru post pages and listing offsets from a list page", () => {
+  it("follows Realbooru post pages and listing offsets by 42", () => {
     const result = discoverSiteSpecificHtml(
-      '<a href="/index.php?page=post&s=view&id=123"><img src="/thumbnails/ab/cd/thumbnail_hash.jpg"></a><a href="/index.php?page=post&s=list&tags=test&pid=42">next</a>',
-      "https://realbooru.com/index.php?page=post&s=list&tags=test"
+      '<a href="/index.php?page=post&s=view&id=123"><img src="/thumbnails/thumbnail_hash.jpg"></a>',
+      "https://realbooru.com/index.php?page=post&s=list&tags=test&pid=42"
     );
     expect(result?.pages).toContain("https://realbooru.com/index.php?page=post&s=view&id=123");
-    expect(result?.pages).toContain("https://realbooru.com/index.php?page=post&s=list&tags=test&pid=42");
+    expect(result?.pages).toContain("https://realbooru.com/index.php?page=post&s=list&tags=test&pid=84");
     expect(result?.followPages).toBe(true);
   });
 
-  it("extracts only the original Realbooru image from a post page", () => {
+  it("uses Realbooru's non-thumbnail /images fallback when #image is absent", () => {
     const result = discoverSiteSpecificHtml(
-      '<img id="image" src="https://img.realbooru.com/images/aa/bb/file.png"><video src="/clip.mp4"></video>',
+      '<a href="https://img.realbooru.com/images/aa/bb/full-image.webp">original</a><img src="https://img.realbooru.com/thumbnails/aa/bb/thumbnail-image.jpg">',
       "https://realbooru.com/index.php?page=post&s=view&id=123"
     );
-    expect(result?.images.map(item => item.url)).toEqual(["https://img.realbooru.com/images/aa/bb/file.png"]);
+    expect(result?.images.map(item => item.url)).toEqual(["https://img.realbooru.com/images/aa/bb/full-image.webp"]);
   });
 
-  it("follows Elitebabes galleries and pagination, then extracts full-size images only", () => {
+  it("follows EliteBabes galleries and sequential list pages, then extracts full-size images only", () => {
     const listing = discoverSiteSpecificHtml(
-      '<ul class="list-gallery"><li><a href="/gallery-one/"><img src="https://cdn.elitebabes.com/content/a_masonry_400.jpg"></a></li></ul><a href="/page/2/">2</a>',
+      '<ul class="list-gallery"><li><a href="/gallery-one/"><img src="https://cdn.elitebabes.com/content/a_masonry_400.jpg"></a></li></ul>',
       "https://www.elitebabes.com/"
     );
     expect(listing?.pages).toContain("https://www.elitebabes.com/gallery-one/");
@@ -61,20 +71,30 @@ describe("image-only source adapters", () => {
     expect(gallery?.images.map(item => item.url)).toEqual(["https://cdn.elitebabes.com/content/a_full.jpg"]);
   });
 
-  it("discovers Buondua albums and continues album image pagination", () => {
+  it("increments EliteBabes tag-list page numbers", () => {
     const listing = discoverSiteSpecificHtml(
-      '<a class="item-link" href="/sample-album-456">album</a><a href="/?start=20">next</a>',
+      '<ul class="list-gallery"><li><a href="/gallery-one/"><img src="https://cdn.elitebabes.com/content/a.jpg"></a></li></ul>',
+      "https://www.elitebabes.com/tag/models/page/3/"
+    );
+    expect(listing?.pages).toContain("https://www.elitebabes.com/tag/models/page/4/");
+  });
+
+  it("discovers Buondua albums and synthesizes the next listing offset by 20", () => {
+    const listing = discoverSiteSpecificHtml(
+      '<a class="item-link" href="/sample-album-456">album</a>',
       "https://buondua.com/"
     );
     expect(listing?.pages).toContain("https://buondua.com/sample-album-456");
     expect(listing?.pages).toContain("https://buondua.com/?start=20");
+  });
+
+  it("continues Buondua album image pagination", () => {
     const album = discoverSiteSpecificHtml(
-      '<img src="https://i2.buondua.com/2026/456/photo-001.jpeg"><a href="?page=2">2</a>',
+      '<img src="https://i2.buondua.com/2026/456/photo-001.jpeg"><a href="?page=2">2</a><a href="?page=3">3</a>',
       "https://buondua.com/sample-album-456"
     );
     expect(album?.images.map(item => item.url)).toEqual(["https://i2.buondua.com/2026/456/photo-001.jpeg"]);
     expect(album?.pages).toContain("https://buondua.com/sample-album-456?page=2");
-    expect(album?.followPages).toBe(true);
   });
 
   it("uses the Sex.com JSON API and schedules the next bounded page", async () => {
