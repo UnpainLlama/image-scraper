@@ -89,7 +89,7 @@
     $("recover-job-id").value = recoveryJobId || "";
     if (!$("terminal-output").childNodes.length) {
       appendBlock([
-        "pscraper — image-only remote scraper",
+        "pscraper — image and animated GIF scraper",
         "TypeScript Worker runtime · queue-backed downloads · R2 object storage",
         "Tor and browser-cookie paste are not available in this hosted runtime.",
         ""
@@ -131,10 +131,10 @@
       " [3] realbooru   (tag search / list)",
       " [4] elitebabes  (tag / gallery)",
       " [5] buondua     (home / hot / tag / album)",
-      " [6] static      (image URLs from HTML; follows next link)",
+      " [6] static      (image / GIF URLs from HTML; follows next link)",
       " [A] auto        (detect site from URL; search defaults to sex.com)",
       "",
-      "Free limits: up to 100 pages, 2,000 images and 1 GiB per job.",
+      "Free limits: up to 100 pages, 2,000 image / GIF files and 1 GiB per job.",
       ""
     ]);
     setPrompt("Choose site [1-6 / A]", "Enter a number or site name. A detects the site from a URL.", "A");
@@ -400,9 +400,9 @@
     let guidance = "";
     if (snapshot.status === "cancelled") guidance = drained ? "Stopped. Export this partial job or start a new scrape." : "Stopped. Waiting for active work to finish.";
     else if (snapshot.status === "completed" && snapshot.failedImages > 0) guidance = "Finished with " + snapshot.failedImages.toLocaleString() + " failed downloads. Export the results or start a new scrape.";
-    else if (snapshot.status === "completed") guidance = "Finished. Export and verify your images before clearing this job.";
+    else if (snapshot.status === "completed") guidance = "Finished. Export and verify your image and GIF files before clearing this job.";
     else if (snapshot.status === "abandoned") guidance = settled ? "This job is abandoned. Delete it or start a new scrape." : "This job is abandoned. Waiting for active work to finish.";
-    else if (snapshot.status === "verified" && allDone) guidance = "Images verified. You can clear this job or start a new scrape.";
+    else if (snapshot.status === "verified" && allDone) guidance = "Image and GIF files verified. You can clear this job or start a new scrape.";
     $("job-guidance").textContent = guidance;
     $("job-guidance").hidden = !guidance;
 

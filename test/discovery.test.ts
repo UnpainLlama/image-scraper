@@ -21,6 +21,23 @@ describe("image discovery", () => {
     expect(result.stylesheets).toContain("https://example.com/site.css");
   });
 
+  it("discovers GIFs from image elements, srcset, linked files and CSS", () => {
+    const html = [
+      '<img src="/animated.gif">',
+      '<img srcset="/small.gif 1x, /large.gif 2x">',
+      '<a href="/downloads/linked.gif">Animated file</a>',
+      '<style>.banner{background-image:url(/background.gif)}</style>'
+    ].join("");
+    const result = discoverFromHtml(html, "https://example.com/");
+    expect(result.images.map(item => item.url)).toEqual([
+      "https://example.com/animated.gif",
+      "https://example.com/small.gif",
+      "https://example.com/large.gif",
+      "https://example.com/downloads/linked.gif",
+      "https://example.com/background.gif"
+    ]);
+  });
+
   it("extracts CSS url() references", () => {
     expect(discoverFromCss(".x{background:url('../images/a.gif')}", "https://example.com/css/site.css"))
       .toEqual(["https://example.com/images/a.gif"]);

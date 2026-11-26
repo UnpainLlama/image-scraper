@@ -152,7 +152,7 @@ function parseElitebabes(document: Document, base: string, mode: "images" | "gal
     const parsed = new URL(url);
     if (!hostMatches(parsed.hostname, "cdn.elitebabes.com") || !parsed.pathname.includes("/content/")) return;
     if (/(?:_w400|masonry_400|favicon|\.svg)(?:\.|$)/i.test(parsed.pathname)) return;
-    if (!/\.(?:jpe?g|png|webp)$/i.test(parsed.pathname)) return;
+    if (!/\.(?:gif|jpe?g|png|webp)$/i.test(parsed.pathname)) return;
     addImage(output, url, base);
   };
 
@@ -220,7 +220,7 @@ function parseBuondua(document: Document, base: string): DiscoveryResult {
         if (!url) continue;
         const parsed = new URL(url);
         if (!hostMatches(parsed.hostname, "buondua.com") || !parsed.pathname.includes("/" + albumId + "/")) continue;
-        if (!/\.(?:jpe?g|png|webp)$/i.test(parsed.pathname)) continue;
+        if (!/\.(?:gif|jpe?g|png|webp)$/i.test(parsed.pathname)) continue;
         addImage(output, url, base);
       }
     }

@@ -97,6 +97,24 @@ describe("image-only source adapters", () => {
     expect(album?.pages).toContain("https://buondua.com/sample-album-456?page=2");
   });
 
+  it("discovers GIF files in EliteBabes galleries and Buondua albums", () => {
+    const eliteBabes = discoverSiteSpecificHtml(
+      '<a href="https://cdn.elitebabes.com/content/animated.gif">animated gallery image</a>',
+      "https://www.elitebabes.com/gallery-one/"
+    );
+    expect(eliteBabes?.images.map(item => item.url)).toEqual([
+      "https://cdn.elitebabes.com/content/animated.gif"
+    ]);
+
+    const buondua = discoverSiteSpecificHtml(
+      '<img src="https://i2.buondua.com/2026/456/animated.gif">',
+      "https://buondua.com/sample-album-456"
+    );
+    expect(buondua?.images.map(item => item.url)).toEqual([
+      "https://i2.buondua.com/2026/456/animated.gif"
+    ]);
+  });
+
   it("uses the Sex.com JSON API and schedules the next bounded page", async () => {
     expect(isSexComUrl("https://www.sex.com/en/gifs")).toBe(true);
     const requested: string[] = [];
