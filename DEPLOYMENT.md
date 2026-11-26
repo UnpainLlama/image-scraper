@@ -10,7 +10,8 @@ Relevant current Free allowances:
 
 - **Workers:** 100,000 requests/day and 10 ms CPU time per ordinary Worker invocation. Keep API requests small; image transfers and parsing are processed asynchronously by Queue consumers.
 - **Queues:** 10,000 standard operations/day, with 24-hour message retention. A normal message delivery usually costs three operations (write, read and delete); retries add more.
-- **Durable Objects:** SQLite-backed classes are supported on Free. The documented Free allowance includes 100,000 requests/day, 13,000 GB-seconds/day and 5 GB of account storage. This application uses SQLite storage.
+- **Durable Objects:** SQLite-backed classes are supported on Free. The documented Free allowances include 100,000 DO requests/day, 13,000 GB-seconds/day, 5 million SQL rows read/day, 100,000 SQL rows written/day, and 5 GB of total SQLite storage. Free-plan usage above any one of these daily limits is rejected until the daily reset. This application uses SQLite storage.
+- **Queue consumers:** Queue consumer invocations have a default 30-second active CPU budget and a 15-minute wall-clock limit. The scraper leaves that default unchanged; normal Worker HTTP requests still have the separate 10 ms Free CPU limit.
 - **Browser Run:** 10 minutes/day on Free. It is only a fallback for pages that look JavaScript-rendered; if the quota is exhausted, the scraper continues with static HTML.
 - **R2 Standard storage:** 10 GB-month, 1 million Class A operations and 10 million Class B operations/month, with free Internet egress. R2 usage above the included allowances is billable.
 
