@@ -30,7 +30,7 @@
     ],
     "consumers": [
       { "queue": "image-scraper-discovery", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 5 },
-      { "queue": "image-scraper-download", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 50 }
+      { "queue": "image-scraper-download", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 5 }
     ]
   },
   "env": {
@@ -59,7 +59,7 @@
         ],
         "consumers": [
           { "queue": "image-scraper-staging-discovery", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 5 },
-          { "queue": "image-scraper-staging-download", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 10 }
+          { "queue": "image-scraper-staging-download", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 5, "max_concurrency": 5 }
         ]
       }
     }
