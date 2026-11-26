@@ -8,7 +8,7 @@ set -eu
 
 # Mount the existing image-scraper bucket, but keep this Python service isolated
 # under its own prefix so it cannot overwrite the TypeScript app's jobs/ objects.
-mkdir -p /mnt/r2 /mnt/r2/pscraper
+mkdir -p /mnt/r2
 /usr/local/bin/tigrisfs \
   --endpoint "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
   --region auto \
@@ -39,6 +39,9 @@ until mountpoint -q /mnt/r2; do
   sleep 1
 done
 
+# Create the isolated prefix after mounting; pre-mount directories are hidden
+# when the filesystem is mounted over /mnt/r2.
+mkdir -p /mnt/r2/pscraper
 export PSCRAPER_DOWNLOAD_DIR=/mnt/r2/pscraper
 export PSCRAPER_STORAGE_BACKEND=r2
 uvicorn server:app --host 0.0.0.0 --port 8080 --proxy-headers --no-access-log &
