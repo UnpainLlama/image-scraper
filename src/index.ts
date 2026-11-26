@@ -12,7 +12,7 @@ const DEFAULT_MAX_FILE = 50 * 1024 * 1024;
 const MANIFEST_LIMIT = 50_000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 
-interface CreateJobBody { siteUrl: string; pages?: string[]; mode: JobMode; concurrency?: number; maxDepth?: number; }
+interface CreateJobBody { siteUrl: string; pages?: string[]; mode: JobMode; concurrency?: number; maxDepth?: number; eliteBabesMode?: "images" | "galleries"; }
 interface VerifyReport { manifestSha256: string; filesChecked: number; bytesChecked: number; failed: number; }
 interface TaskRegistration { taskId: string; url: string; urlHash: string; depth?: number; }
 
