@@ -228,7 +228,7 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
       if (rendered) html = rendered;
     }
 
-    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl) ||
+    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl, { eliteBabesMode: settings.eliteBabesMode }) ||
       discoverFromHtml(html, resolvedPageUrl, settings.maxImagesPerPage || 2000, 2000);
   }
   const allImages = [...discovered.images];
@@ -407,7 +407,8 @@ async function createJob(request: Request, env: Env): Promise<Response> {
       : 3,
     maxDepth: body.mode === "crawl" ? Math.min(10, Math.max(0, Math.floor(Number(body.maxDepth ?? 3)))) : 0,
     maxPages: 100, maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
-    perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 2000
+    perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 2000,
+    eliteBabesMode: body.eliteBabesMode === "images" ? "images" : "galleries"
   };
   const init = await jobRequest(env, jobId, "/init", { jobId, ...settings });
   if (!init.ok) throw new ScrapeError("JOB_INITIALIZATION_FAILED");
