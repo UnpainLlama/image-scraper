@@ -244,3 +244,32 @@ export async function fetchForJob(env: Env, jobId: string, input: string, header
 }
 
 export const IMAGE_SCRAPER_USER_AGENT = USER_AGENT;
+
+export interface PublicUrlProbe {
+  ok: boolean;
+  status: number;
+  finalUrl: string;
+  contentType: string;
+}
+
+export async function probePublicUrl(input: string): Promise<PublicUrlProbe> {
+  const target = validatePublicUrl(input);
+  const policy = await getRobotsPolicy(target);
+  if (!isRobotsAllowed(target.pathname + target.search, policy)) {
+    throw new ScrapeError("ROBOTS_DISALLOWED");
+  }
+
+  const result = await fetchRawSafe(target, {
+    accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5"
+  });
+  const contentType = result.response.headers.get("content-type") || "";
+  const status = result.response.status;
+  await result.response.body?.cancel();
+
+  return {
+    ok: status >= 200 && status < 400,
+    status,
+    finalUrl: result.finalUrl.toString(),
+    contentType
+  };
+}
