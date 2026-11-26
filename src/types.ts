@@ -11,6 +11,7 @@ export interface JobSettings {
   perDomainDelayMs: number;
   maxImagesPerPage?: number;
   maxImagesPerJob?: number;
+  eliteBabesMode?: "images" | "galleries";
 }
 export interface QueuePayload { jobId: string; taskId: string; }
 export interface StoredTaskPayload { url: string; depth?: number; }
