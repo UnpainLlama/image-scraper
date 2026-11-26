@@ -18,10 +18,16 @@
       { "name": "AUTH_LIMITER", "class_name": "AuthRateLimiter" }
     ]
   },
-  "exports": {
-    "PscraperContainer": { "type": "durable-object", "storage": "sqlite" },
-    "AuthRateLimiter": { "type": "durable-object", "storage": "sqlite" }
-  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["JobDurableObject"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["PscraperContainer", "AuthRateLimiter"]
+    }
+  ],
   "assets": {
     "directory": "./web",
     "binding": "ASSETS",
