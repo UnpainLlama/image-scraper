@@ -81,7 +81,7 @@ Wrangler uses wrangler.jsonc. Do not add credentials to that file. The R2 bucket
 
 ## 5. Password-only authentication
 
-The dashboard uses one password and no username, email address, Google login or Cloudflare Access JWT. The Worker protects every API route with a signed session cookie.
+The terminal-style browser console uses one password and no username, email address, Google login or Cloudflare Access JWT. The Worker protects every API route with a signed session cookie.
 
 If you keep a Cloudflare Access application for the Worker hostname, add a Bypass policy for everyone. This lets requests reach the Worker; it does not bypass the application's password check. Do not add a public API route or remove the Worker-side session check.
 
@@ -94,9 +94,24 @@ Keep both values out of GitHub, wrangler.jsonc, and dashboard files. Configure t
 
 The login endpoint allows five attempts in a 15-minute window. Failed attempts are counted by the existing SQLite-backed Durable Object namespace. Successful login clears the counter. Sessions use a Secure, HttpOnly, SameSite=Strict cookie and expire after 12 hours.
 
-The dashboard HTML and static assets can be served before login, but every scraper API endpoint returns 401 until a valid session is present. Logging out expires the browser cookie. Rotating SESSION_SECRET invalidates existing sessions.
+The console HTML and static assets can be served before login, but every scraper API endpoint returns 401 until a valid session is present. Logging out expires the browser cookie. Rotating SESSION_SECRET invalidates existing sessions.
 
-## 6. Export credentials
+## 6. Terminal console workflow
+
+After login, the browser console guides the operator through the supported site selection:
+
+- Sex.com: search query or list URL
+- Rule34 / Realbooru: tags or list URL
+- EliteBabes: tag, home or gallery URL, then listing thumbnails or full-size galleries
+- Buondua: home, hot, tag or album URL / numeric album ID
+- Static: an HTML page URL; only an explicit same-origin next-page link is followed
+- Auto: detects a supported hostname from a URL; an unclassified URL is treated as static HTML, while a search term defaults to Sex.com
+
+The console checks the target with the Worker’s public-URL and robots protections before it creates a job. It accepts 1–100 pages (Enter defaults to 100), 1–5 parallel workers (Enter defaults to 3), and applies the existing 2,000-image / 1-GiB per-job caps. These are hard application ceilings for this Free-oriented build.
+
+The hosted Worker does not offer Tor/SOCKS, browser-cookie paste, a general terminal, per-album local folders, or the former Python CLI's metadata files. Images are stored in R2 as content-addressed objects under the job prefix. Site adapters and target-site behavior still need live integration checks after deployment.
+
+## 7. Export credentials
 
 Export credentials are created separately from Worker credentials. Create an R2 API token with Object Read permission scoped to the image-scraper-archive bucket. Keep the Access Key ID and Secret Access Key on the machine running rclone; do not add them to GitHub or Cloudflare Worker variables.
 
@@ -113,9 +128,9 @@ The manifest is downloaded from the dashboard and is not stored by the Worker. S
 
     scripts/verify.sh manifest-JOB_ID.json ./image-export > verification-report.json
 
-Upload the resulting JSON report in the dashboard. The report includes only the manifest digest, checked file count, checked byte count and failure count. It contains no source URLs.
+Upload the resulting JSON report in the terminal console. The report includes only the manifest digest, checked file count, checked byte count and failure count. It contains no source URLs.
 
-## 7. Clear a job
+## 8. Clear a job
 
 Clear is unavailable until:
 
@@ -128,7 +143,7 @@ The clear endpoint is resumable. It stops leasing, deletes the job prefix in pag
 
 The application currently uses streamed single-object R2 puts and does not create multipart uploads. The bucket lifecycle rule aborts any incomplete multipart upload after one day.
 
-## 8. Privacy and observability
+## 9. Privacy and observability
 
 - Worker observability, invocation logs and traces are disabled in wrangler.jsonc.
 - The Worker does not call console.log, console.error or emit URLs, headers, filenames or R2 keys.
