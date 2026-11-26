@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "pscraper",
+  "name": "image-scraper",
   "main": "worker/index.ts",
   "compatibility_date": "2026-11-26",
   "containers": [
@@ -35,7 +35,7 @@
     "not_found_handling": "single-page-application"
   },
   "vars": {
-    "R2_BUCKET_NAME": "pscraper-storage"
+    "R2_BUCKET_NAME": "image-scraper-archive"
   },
   "observability": {
     "enabled": false,
