@@ -87,7 +87,7 @@ If you keep a Cloudflare Access application for the Worker hostname, add a Bypas
 
 In Cloudflare, open Workers & Pages > image-scraper > Settings > Variables and Secrets. Add these as encrypted secrets:
 
-- `APP_PASSWORD`: the password used to unlock the dashboard. Use at least 15 characters.
+- `APP_PASSWORD`: the password used to unlock the dashboard. The application currently requires at least 8 characters; use a long, unique password.
 - `SESSION_SECRET`: an independently generated random value with at least 32 random characters. Do not reuse the dashboard password.
 
 Keep both values out of GitHub, wrangler.jsonc, and dashboard files. Configure the same secrets separately for any staging Worker.
@@ -107,7 +107,7 @@ After login, the browser console guides the operator through the supported site 
 - Static: an HTML page URL; only an explicit same-origin next-page link is followed
 - Auto: detects a supported hostname from a URL; an unclassified URL is treated as static HTML, while a search term defaults to Sex.com
 
-The console checks the target with the Worker’s public-URL and robots protections before it creates a job. It accepts 1–100 pages (Enter defaults to 100), 1–5 parallel workers (Enter defaults to 3), and applies the existing 2,000-image / 1-GiB per-job caps. These are hard application ceilings for this Free-oriented build.
+The console checks the target using Worker HTTP first. If that request returns 403, it independently tries Browser Run to determine whether the public page can be rendered. This preflight verifies page access only; it does not guarantee that the site's API or image CDN will permit downloads. It accepts 1–100 pages (Enter defaults to 100), 1–5 parallel workers (Enter defaults to 3), and applies the existing 2,000-image / 1-GiB per-job caps. These are hard application ceilings for this Free-oriented build.
 
 The hosted Worker does not offer Tor/SOCKS, browser-cookie paste, a general terminal, per-album local folders, or the former Python CLI's metadata files. Images are stored in R2 as content-addressed objects under the job prefix. Site adapters and target-site behavior still need live integration checks after deployment.
 

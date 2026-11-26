@@ -136,31 +136,26 @@ function escapeRegex(value: string): string {
   return value.split("").map(character => ".*+?^$()|[]{}\\/".includes(character) ? "\\" + character : character).join("");
 }
 
-async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allowedOrigin: string): Promise<string | null> {
-  const guard = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml" }, allowedOrigin);
+async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allowedOrigin: string, useJobPermit = true): Promise<string | null> {
+  // Browser Run is an independent retrieval path, not a fallback that first
+  // requires a successful Worker fetch. This matters for sites that return
+  // 403 to datacenter HTTP requests but serve the same public page in a browser.
+  const target = validatePublicUrl(pageUrl);
+  if ( target.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
   let releaseBrowser: (() => Promise<void>) | null = null;
   try {
-    await guard.response.body?.cancel();
-    if (guard.finalUrl.origin !== allowedOrigin) throw new ScrapeError("CROSS_ORIGIN_REDIRECT_BLOCKED");
-    await guard.release();
-    releaseBrowser = await acquireBrowserPagePermit(env, jobId, guard.finalUrl.toString(), allowedOrigin);
-    const patterns = browserRequestPatterns(allowedOrigin);
-    try {
-      const response = await env.BROWSER.quickAction("content", {
-        url: guard.finalUrl.toString(),
-        ...patterns,
-        gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
-      });
-      if (!response.ok) return null;
-      return await readLimitedText(response, 2_500_000);
-    } catch {
-      // Browser Run has a 10-minute/day allowance on Workers Free. If the
-      // optional renderer is unavailable or quota-limited, continue with the
-      // original HTML instead of failing the whole image job.
-      return null;
-    }
+    if (useJobPermit) releaseBrowser = await acquireBrowserPagePermit(env, jobId, target.toString(), allowedOrigin);
+    const response = await env.BROWSER.quickAction("content", {
+      url: target.toString(),
+      ...browserRequestPatterns(allowedOrigin),
+      gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
+    });
+    if (!response.ok) return null;
+    return await readLimitedText(response, 2_500_000);
+  } catch {
+    // Browser Run is optional and has a limited daily allowance on Workers Free.
+    return null;
   } finally {
-    await guard.release();
     if (releaseBrowser) await releaseBrowser();
   }
 }
@@ -196,32 +191,52 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
   const pageUrl = validatePublicUrl(payload.url, settings.allowedOrigin).toString();
   let discovered: { images: Array<{ url: string }>; stylesheets: string[]; pages: string[]; followPages?: boolean };
   if (isSexComUrl(pageUrl)) {
-    discovered = await discoverSexComApiPage(pageUrl, async apiUrl => {
-      const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" }, "https://www.sex.com");
-      try {
-        if (api.response.status === 429 || api.response.status >= 500) {
-          throw new ScrapeError("PAGE_HTTP_" + api.response.status, true, parseRetryAfter(api.response.headers.get("retry-after")));
-        }
-        if (!api.response.ok) throw new ScrapeError("PAGE_HTTP_" + api.response.status);
-        const contentType = api.response.headers.get("content-type") || "";
-        if (contentType && !contentType.includes("application/json") && !contentType.includes("text/plain")) {
-          throw new ScrapeError("SEXCOM_API_NOT_JSON");
-        }
-        return await readLimitedText(api.response, 2_500_000);
-      } finally { await api.release(); }
-    });
-  } else {
-    const fetched = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.2" }, settings.allowedOrigin);
-    const resolvedPageUrl = fetched.finalUrl.toString();
-    let html = "";
     try {
+      discovered = await discoverSexComApiPage(pageUrl, async apiUrl => {
+        const api = await fetchForJob(env, jobId, apiUrl, { accept: "application/json" }, "https://www.sex.com");
+        try {
+          if (api.response.status === 429 || api.response.status >= 500) {
+            throw new ScrapeError("PAGE_HTTP_" + api.response.status, true, parseRetryAfter(api.response.headers.get("retry-after")));
+          }
+          if (!api.response.ok) throw new ScrapeError("PAGE_HTTP_" + api.response.status);
+          const contentType = api.response.headers.get("content-type") || "";
+          if (contentType && !contentType.includes("application/json") && !contentType.includes("text/plain")) {
+            throw new ScrapeError("SEXCOM_API_NOT_JSON");
+          }
+          return await readLimitedText(api.response, 2_500_000);
+        } finally { await api.release(); }
+      });
+    } catch (error) {
+      // If the private JSON endpoint is unavailable to Worker fetch, try the
+      // public listing in Browser Run and extract only image URLs from its HTML.
+      const rendered = await fetchRenderedHtml(env, jobId, pageUrl, settings.allowedOrigin);
+      if (!rendered) throw error;
+      discovered = discoverFromHtml(rendered, pageUrl, settings.maxImagesPerPage || 2000, 2000);
+    }
+  } else {
+    let html = "";
+    let resolvedPageUrl = pageUrl;
+    const fetched = await fetchForJob(env, jobId, pageUrl, { accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.2" }, settings.allowedOrigin);
+    try {
+      resolvedPageUrl = fetched.finalUrl.toString();
       if (fetched.response.status === 429 || fetched.response.status >= 500) {
         throw new ScrapeError("PAGE_HTTP_" + fetched.response.status, true, parseRetryAfter(fetched.response.headers.get("retry-after")));
       }
-      if (!fetched.response.ok) throw new ScrapeError("PAGE_HTTP_" + fetched.response.status);
-      const contentType = fetched.response.headers.get("content-type") || "";
-      if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) throw new ScrapeError("PAGE_NOT_HTML");
-      html = await readLimitedText(fetched.response, 2_500_000);
+      if (!fetched.response.ok) {
+        const status = fetched.response.status;
+        await fetched.response.body?.cancel();
+        if (status !== 403) throw new ScrapeError("PAGE_HTTP_" + status);
+        // Release the HTTP permit before acquiring the Browser Run permit; jobs
+        // configured with concurrency=1 must still be able to switch transports.
+        await fetched.release();
+        const rendered = await fetchRenderedHtml(env, jobId, pageUrl, settings.allowedOrigin);
+        if (!rendered) throw new ScrapeError("PAGE_HTTP_" + status);
+        html = rendered;
+      } else {
+        const contentType = fetched.response.headers.get("content-type") || "";
+        if (contentType && !contentType.includes("text/html") && !contentType.includes("application/xhtml+xml")) throw new ScrapeError("PAGE_NOT_HTML");
+        html = await readLimitedText(fetched.response, 2_500_000);
+      }
     } finally { await fetched.release(); }
 
     if (looksJavaScriptRendered(html)) {
@@ -464,7 +479,7 @@ async function buildManifest(env: Env, jobId: string): Promise<Response> {
   }});
 }
 
-async function probeTerminalTarget(request: Request): Promise<Response> {
+async function probeTerminalTarget(request: Request, env: Env): Promise<Response> {
   const body = await readJson<{ site?: string; input?: string; eliteBabesMode?: "images" | "galleries"; maxPages?: number }>(request);
   const target = resolveTerminalTarget(body.site || "auto", body.input || "", body.eliteBabesMode);
   const pageLimit = validateTerminalPageLimit(body.maxPages);
@@ -473,18 +488,30 @@ async function probeTerminalTarget(request: Request): Promise<Response> {
   if (new URL(probe.finalUrl).origin !== safeUrl.origin) {
     return json({ error: "CROSS_ORIGIN_REDIRECT_BLOCKED", target, maxPages: pageLimit }, 422);
   }
-  if (!probe.ok) {
-    return json({ error: "SITE_PROBE_FAILED", status: probe.status, target, maxPages: pageLimit }, 422);
+  if (probe.ok) {
+    if (probe.contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(probe.contentType)) {
+      return json({ error: "TARGET_NOT_HTML", contentType: probe.contentType, target, maxPages: pageLimit }, 422);
+    }
+    return json({ target, maxPages: pageLimit, probe: { ...probe, accessMethod: "worker-http" } });
   }
-  if (probe.contentType && !/(?:text\/html|application\/xhtml\+xml)/i.test(probe.contentType)) {
-    return json({ error: "TARGET_NOT_HTML", contentType: probe.contentType, target, maxPages: pageLimit }, 422);
+
+  // A 403 from Worker fetch is not conclusive: the public page may still be
+  // available through a normal browser request. Test that path independently.
+  if (probe.status === 403) {
+    const rendered = await fetchRenderedHtml(env, "terminal-probe-" + crypto.randomUUID(), safeUrl.toString(), safeUrl.origin, false);
+    if (rendered) {
+      return json({
+        target, maxPages: pageLimit,
+        probe: { ok: true, status: 200, finalUrl: safeUrl.toString(), contentType: "text/html", accessMethod: "browser-run", workerHttpStatus: 403 }
+      });
+    }
   }
-  return json({ target, maxPages: pageLimit, probe });
+  return json({ error: "SITE_PROBE_FAILED", status: probe.status, target, maxPages: pageLimit, probe }, 422);
 }
 
 async function routeApi(request: Request, env: Env): Promise<Response> {
   const path = new URL(request.url).pathname;
-  if (path === "/api/terminal/probe" && request.method === "POST") return probeTerminalTarget(request);
+  if (path === "/api/terminal/probe" && request.method === "POST") return probeTerminalTarget(request, env);
   if (path === "/api/jobs" && request.method === "POST") return createJob(request, env);
   const match = path.match(/^\/api\/jobs\/([a-z0-9-]{16,64})(?:\/(pause|resume|cancel|manifest|verify|clear))?$/);
   if (!match) return json({ error: "NOT_FOUND" }, 404);

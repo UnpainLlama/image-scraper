@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { probePublicUrl, validatePublicUrl } from "../src/security";
+import { browserRequestPatterns, probePublicUrl, validatePublicUrl } from "../src/security";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -44,5 +44,28 @@ describe("target probe", () => {
     expect(result.ok).toBe(false);
     expect(result.status).toBe(403);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Browser Run request allowlist", () => {
+  function matcher(value: string): RegExp {
+    const end = value.lastIndexOf("/");
+    return new RegExp(value.slice(1, end), value.slice(end + 1));
+  }
+
+  it("allows the Sex.com site and its image CDN but rejects unrelated hosts", () => {
+    const patterns = browserRequestPatterns("https://www.sex.com");
+    const allow = matcher(patterns.allowRequestPattern[0]!);
+    expect(allow.test("https://www.sex.com/en/gifs")).toBe(true);
+    expect(allow.test("https://imagex1.sx.cdn.live/media/example.gif")).toBe(true);
+    expect(allow.test("https://unrelated.example/image.js")).toBe(false);
+  });
+
+  it("keeps arbitrary static targets restricted to their exact origin", () => {
+    const patterns = browserRequestPatterns("https://gallery.example.org");
+    const allow = matcher(patterns.allowRequestPattern[0]!);
+    expect(allow.test("https://gallery.example.org/page")).toBe(true);
+    expect(allow.test("https://cdn.gallery.example.org/script.js")).toBe(false);
+    expect(allow.test("https://unrelated.example/script.js")).toBe(false);
   });
 });

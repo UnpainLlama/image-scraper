@@ -50,11 +50,35 @@ function escapeBrowserPattern(value: string): string {
 }
 
 export function browserRequestPatterns(allowedOrigin: string): { allowRequestPattern: string[]; rejectRequestPattern: string[] } {
-  const origin = escapeBrowserPattern(new URL(allowedOrigin).origin);
-  const ownSite = origin + "(?:\\/|$)";
+  const hostname = new URL(allowedOrigin).hostname.toLowerCase();
+  const relatedDomains: Record<string, string[]> = {
+    "www.sex.com": ["sex.com", "sx.cdn.live"],
+    "sex.com": ["sex.com", "sx.cdn.live"],
+    "buondua.com": ["buondua.com"],
+    "www.buondua.com": ["buondua.com"],
+    "rule34.xxx": ["rule34.xxx"],
+    "realbooru.com": ["realbooru.com"],
+    "www.realbooru.com": ["realbooru.com"],
+    "elitebabes.com": ["elitebabes.com"],
+    "www.elitebabes.com": ["elitebabes.com"]
+  };
+  const domains = relatedDomains[hostname];
+  if (!domains) {
+    const origin = escapeBrowserPattern(new URL(allowedOrigin).origin);
+    const ownSite = origin + "(?:\\/|$)";
+    return {
+      allowRequestPattern: ["/^" + ownSite + "/i"],
+      rejectRequestPattern: ["/^(?!" + ownSite + ").*/i"]
+    };
+  }
+  const allowed = domains.map(domain => {
+    const suffix = domain.split(".").map(escapeBrowserPattern).join("\\.");
+    return "https?:\\/\\/(?:[a-z0-9-]+\\.)*" + suffix + "(?::443)?(?:\\/|$)";
+  });
+  const combined = "(?:" + allowed.join("|") + ")";
   return {
-    allowRequestPattern: ["/^" + ownSite + "/i"],
-    rejectRequestPattern: ["/^(?!" + ownSite + ").*/i"]
+    allowRequestPattern: ["/^" + combined + "/i"],
+    rejectRequestPattern: ["/^(?!" + combined + ").*/i"]
   };
 }
 
