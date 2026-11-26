@@ -225,13 +225,14 @@
       if (name === "resume" && currentSnapshot &&
         ["budget-paused", "verified"].includes(currentSnapshot.status) &&
         currentSnapshot.bytesStored >= currentSnapshot.budgetBytes * 0.95) {
-        const suggested = (currentSnapshot.budgetBytes / (1024 ** 3) + 1).toFixed(2);
-        const value = window.prompt("New total storage budget in GiB", suggested);
+        const suggested = Math.min(1, currentSnapshot.budgetBytes / (1024 ** 3) + 0.1).toFixed(2);
+        const value = window.prompt("New total storage budget in GiB (maximum 1.00 on Free)", suggested);
         if (value === null) return;
         const budgetBytes = Math.floor(Number(value) * (1024 ** 3));
         if (!Number.isSafeInteger(budgetBytes) || budgetBytes <= currentSnapshot.bytesStored) {
           throw new Error("BUDGET_MUST_EXCEED_STORED_BYTES");
         }
+        if (budgetBytes > 1024 ** 3) throw new Error("FREE_TIER_BUDGET_LIMIT");
         body = { budgetBytes };
       }
       await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/" + name, {
@@ -241,7 +242,9 @@
       notice(name === "cancel" ? "Stop requested. Queued tasks are being stopped." : "Job updated.", "success");
       await refresh();
     } catch (error) {
-      notice(error.message || "REQUEST_FAILED", "error");
+      notice(error.message === "FREE_TIER_BUDGET_LIMIT"
+        ? "The Free-tier job limit is 1 GiB. Export, verify and clear this job before starting another job."
+        : error.message || "REQUEST_FAILED", "error");
     }
   }
 
