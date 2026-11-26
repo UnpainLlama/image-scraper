@@ -104,12 +104,12 @@ After login, the browser console guides the operator through the supported site 
 - Rule34 / Realbooru: tags or list URL
 - EliteBabes: tag, home or gallery URL, then listing thumbnails or full-size galleries
 - Buondua: home, hot, tag or album URL / numeric album ID
-- Static: an HTML page URL; only an explicit same-origin next-page link is followed
+- Static: an HTML page URL; image and GIF URLs are discovered, and only an explicit same-origin next-page link is followed
 - Auto: detects a supported hostname from a URL; an unclassified URL is treated as static HTML, while a search term defaults to Sex.com
 
-The console checks the target using Worker HTTP first. If that request returns 403, it independently tries Browser Run to determine whether the public page can be rendered. This preflight verifies page access only; it does not guarantee that the site's API or image CDN will permit downloads. It accepts 1–100 pages (Enter defaults to 100), 1–5 parallel workers (Enter defaults to 3), and applies the existing 2,000-image / 1-GiB per-job caps. These are hard application ceilings for this Free-oriented build.
+The console checks the target using Worker HTTP first. If that request returns 403, it independently tries Browser Run to determine whether the public page can be rendered. This preflight verifies page access only; it does not guarantee that the site's API or image CDN will permit downloads. It accepts 1–100 pages (Enter defaults to 100), 1–5 parallel workers (Enter defaults to 3), and applies the existing 2,000-image/GIF-file / 1-GiB per-job caps. These are hard application ceilings for this Free-oriented build.
 
-The hosted Worker does not offer Tor/SOCKS, browser-cookie paste, a general terminal, per-album local folders, or the former Python CLI's metadata files. Images are stored in R2 as content-addressed objects under the job prefix. Site adapters and target-site behavior still need live integration checks after deployment.
+The hosted Worker does not offer Tor/SOCKS, browser-cookie paste, a general terminal, per-album local folders, or the former Python CLI's metadata files. Image and GIF files are stored in R2 as content-addressed objects under the job prefix. Site adapters and target-site behavior still need live integration checks after deployment.
 
 ## 7. Export credentials
 
