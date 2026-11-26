@@ -559,15 +559,11 @@
       const response = await fetch("/api/jobs/" + encodeURIComponent(activeJobId) + "/manifest", {
         credentials: "same-origin", cache: "no-store"
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || "MANIFEST_FAILED");
-      const blob = new Blob([JSON.stringify(data)]);
-      // The API may return a direct download rather than JSON; use its body.
-      const download = await fetch("/api/jobs/" + encodeURIComponent(activeJobId) + "/manifest", {
-        credentials: "same-origin", cache: "no-store"
-      });
-      if (!download.ok) throw new Error("MANIFEST_FAILED");
-      const file = await download.blob();
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || "MANIFEST_FAILED");
+      }
+      const file = await response.blob();
       const link = document.createElement("a");
       const objectUrl = URL.createObjectURL(file);
       link.href = objectUrl;
@@ -576,7 +572,6 @@
       link.click();
       link.remove();
       URL.revokeObjectURL(objectUrl);
-      void blob;
       notice("Manifest downloaded. Export and verify it with the repository scripts.", "success");
     } catch (error) { notice(error.message || "MANIFEST_FAILED", "error"); }
   });
