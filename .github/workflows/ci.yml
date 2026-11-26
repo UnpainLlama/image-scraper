@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "implementation/**"
+      - "rebuild/**"
   pull_request:
     branches:
       - main
