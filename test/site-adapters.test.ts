@@ -148,4 +148,18 @@ describe("image-only source adapters", () => {
     expect(normalizeSiteListingUrl(post)).toBe(post);
   });
 
+
+  it("preserves EliteBabes list-thumbnail mode separately from full-size galleries", () => {
+    const html = '<ul class="list-gallery"><li><a href="/gallery-one/"><img src="https://cdn.elitebabes.com/content/a_masonry_400.jpg"></a></li></ul>';
+    const thumbnails = discoverSiteSpecificHtml(html, "https://www.elitebabes.com/", { eliteBabesMode: "images" });
+    expect(thumbnails?.images.map(item => item.url)).toEqual([
+      "https://cdn.elitebabes.com/content/a_masonry_400.jpg"
+    ]);
+    expect(thumbnails?.pages).toContain("https://www.elitebabes.com/page/2/");
+
+    const galleries = discoverSiteSpecificHtml(html, "https://www.elitebabes.com/", { eliteBabesMode: "galleries" });
+    expect(galleries?.images).toEqual([]);
+    expect(galleries?.pages).toContain("https://www.elitebabes.com/gallery-one/");
+  });
+
 });
