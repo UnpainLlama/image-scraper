@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "implementation/**"
+      - "phase-a/**"
   pull_request:
     branches:
       - main
@@ -24,3 +25,36 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
       - run: npm test
+
+  pscraper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Python runtime dependencies
+        working-directory: pscraper
+        run: python -m pip install --disable-pip-version-check -r container/requirements.txt
+
+      - name: Validate packaged Python archive and run image-only tests
+        working-directory: pscraper
+        run: bash scripts/validate-python.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Pscraper Worker dependencies
+        working-directory: pscraper
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck Pscraper Worker
+        working-directory: pscraper
+        run: npm run typecheck
+
+      - name: Build Linux container image
+        working-directory: pscraper
+        run: docker build --platform linux/amd64 --tag image-scraper-pscraper:ci .
