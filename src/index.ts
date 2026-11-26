@@ -470,8 +470,14 @@ async function probeTerminalTarget(request: Request): Promise<Response> {
   const pageLimit = validateTerminalPageLimit(body.maxPages);
   const safeUrl = validatePublicUrl(target.siteUrl);
   const probe = await probePublicUrl(safeUrl.toString());
+  if (new URL(probe.finalUrl).origin !== safeUrl.origin) {
+    return json({ error: "CROSS_ORIGIN_REDIRECT_BLOCKED", target, maxPages: pageLimit }, 422);
+  }
   if (!probe.ok) {
     return json({ error: "SITE_PROBE_FAILED", status: probe.status, target, maxPages: pageLimit }, 422);
+  }
+  if (!/(?:text\/html|application\/xhtml\+xml)/i.test(probe.contentType)) {
+    return json({ error: "TARGET_NOT_HTML", contentType: probe.contentType, target, maxPages: pageLimit }, 422);
   }
   return json({ target, maxPages: pageLimit, probe });
 }
