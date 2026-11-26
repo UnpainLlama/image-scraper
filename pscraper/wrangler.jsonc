@@ -1,0 +1,45 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pscraper",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-11-26",
+  "containers": [
+    {
+      "class_name": "PscraperContainer",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "base": { "dockerfile": "./Dockerfile" }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "PSCRAPER", "class_name": "PscraperContainer" },
+      { "name": "AUTH_LIMITER", "class_name": "AuthRateLimiter" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["PscraperContainer", "AuthRateLimiter"]
+    }
+  ],
+  "exports": {
+    "PscraperContainer": { "type": "durable-object", "storage": "sqlite" },
+    "AuthRateLimiter": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "R2_BUCKET_NAME": "pscraper-storage"
+  },
+  "observability": {
+    "enabled": false,
+    "logs": { "enabled": false, "invocation_logs": false },
+    "traces": { "enabled": false }
+  }
+}

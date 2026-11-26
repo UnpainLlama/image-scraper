@@ -1,0 +1,5 @@
+APP_PASSWORD=replace-with-a-unique-passphrase-of-at-least-15-characters
+SESSION_SECRET=replace-with-at-least-32-random-characters
+R2_ACCOUNT_ID=your-cloudflare-account-id
+AWS_ACCESS_KEY_ID=your-r2-access-key-id
+AWS_SECRET_ACCESS_KEY=your-r2-secret-access-key
