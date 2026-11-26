@@ -50,6 +50,7 @@ async function snapshot(stub: DurableObjectStub) {
     pendingPages: number;
     pendingImages: number;
     imagesStored: number;
+    failedImages: number;
     bytesStored: number;
     taskCounts: { pending: number; leased: number; done: number; failed: number };
   };
