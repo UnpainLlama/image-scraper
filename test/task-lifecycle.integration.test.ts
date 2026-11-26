@@ -50,6 +50,7 @@ async function snapshot(stub: DurableObjectStub) {
     pendingPages: number;
     pendingImages: number;
     imagesStored: number;
+    failedImages: number;
     bytesStored: number;
     taskCounts: { pending: number; leased: number; done: number; failed: number };
   };
@@ -89,6 +90,75 @@ describe("Durable Object task and storage lifecycle", () => {
     const resumed = await snapshot(stub);
     expect(resumed.status).toBe("running");
     expect(resumed.taskCounts.pending).toBe(2);
+  });
+
+  it("does not consume retry attempts for scheduler rate-limit deferrals", async () => {
+    const { stub } = await createJob();
+    const parentId = hash("a");
+    const imageId = hash("b");
+    await request(stub, "/register-pages", {
+      items: [task(parentId, hash("c"), "https://example.com/")]
+    });
+    await request(stub, "/start", {});
+    expect((await request(stub, "/task/lease", { taskId: parentId }).then(response => response.json()) as { result: string }).result)
+      .toBe("leased");
+    const discovered = await request(stub, "/page/complete", {
+      taskId: parentId,
+      images: [task(imageId, hash("d"), "https://example.com/animated.gif")],
+      pages: []
+    });
+    expect((await discovered.json() as { parent: string }).parent).toBe("done");
+
+    // More scheduler deferrals than the normal retry limit must leave the
+    // queued GIF download pending rather than mark it as failed.
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      const lease = await request(stub, "/task/lease", { taskId: imageId });
+      expect((await lease.json() as { result: string }).result).toBe("leased");
+      const deferred = await request(stub, "/task/retry", {
+        taskId: imageId,
+        code: "RATE_LIMITED",
+        retryable: true,
+        delaySeconds: 1
+      });
+      expect((await deferred.json() as { result: string }).result).toBe("accepted");
+      await runInDurableObject(stub, async (_instance, state) => {
+        state.storage.sql.exec("UPDATE tasks SET next_attempt_at = 0 WHERE task_id = ?", imageId);
+      });
+    }
+
+    const taskState = await runInDurableObject(stub, async (_instance, state) => {
+      return state.storage.sql.exec(
+        "SELECT state, attempt_count FROM tasks WHERE task_id = ?", imageId
+      ).toArray() as unknown as Array<{ state: string; attempt_count: number }>;
+    });
+    expect(taskState[0]).toMatchObject({ state: "pending", attempt_count: 0 });
+    const current = await snapshot(stub);
+    expect(current.pendingImages).toBe(1);
+    expect(current.failedImages).toBe(0);
+  });
+
+  it("keeps real HTTP 429 failures within the normal retry budget", async () => {
+    const { stub } = await createJob();
+    const taskId = hash("e");
+    await request(stub, "/register-pages", {
+      items: [task(taskId, hash("f"), "https://example.com/")]
+    });
+    await request(stub, "/start", {});
+    const lease = await request(stub, "/task/lease", { taskId });
+    expect((await lease.json() as { result: string }).result).toBe("leased");
+    const retry = await request(stub, "/task/retry", {
+      taskId,
+      code: "IMAGE_HTTP_429",
+      retryable: true,
+      delaySeconds: 5
+    });
+    expect((await retry.json() as { result: string }).result).toBe("accepted");
+    const taskState = await runInDurableObject(stub, async (_instance, state) => {
+      return state.storage.sql.exec(
+        "SELECT state, attempt_count FROM tasks WHERE task_id = ?", taskId
+      ).toArray() as unknown as Array<{ state: string; attempt_count: number }>;
+    });
+    expect(taskState[0]).toMatchObject({ state: "pending", attempt_count: 1 });
   });
 
   it("requeues a task after its worker lease expires", async () => {

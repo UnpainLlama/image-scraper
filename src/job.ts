@@ -531,15 +531,19 @@ export class JobDurableObject extends DurableObject<Env> {
         if (!tasks.length) return json({ result: "rejected", reason: "TASK_NOT_FOUND" }, 404);
         if (tasks[0]!.state === "done" || tasks[0]!.state === "failed") return json({ result: "already_terminal" });
         const code = /^[A-Z0-9_]{1,50}$/.test(body.code) ? body.code : "UNKNOWN_ERROR";
-        if (!body.retryable || Number(tasks[0]!.attempt_count) >= TASK_RETRY_LIMIT) {
+        // RATE_LIMITED is local scheduler backpressure (domain pacing or the
+        // job's concurrency cap), not a failed network attempt. Defer it without
+        // consuming the bounded retry budget so large same-host batches drain.
+        const schedulerDeferred = body.retryable && code === "RATE_LIMITED";
+        if (!body.retryable || (Number(tasks[0]!.attempt_count) >= TASK_RETRY_LIMIT && !schedulerDeferred)) {
           const outcome = this.markTask(body.taskId, "failed", code);
           await this.updateCompletion();
           return json({ result: outcome, state: "failed" });
         }
         const seconds = Math.min(900, Math.max(1, Number(body.delaySeconds || Math.min(300, 2 ** Number(tasks[0]!.attempt_count)))));
         const next = Date.now() + seconds * 1000;
-        this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ?, next_publish_at = 0, error_code = ? WHERE task_id = ?",
-          next, code, body.taskId);
+        this.ctx.storage.sql.exec("UPDATE tasks SET state = 'pending', lease_until = 0, enqueued = 0, next_attempt_at = ?, next_publish_at = 0, attempt_count = CASE WHEN ? THEN MAX(0, attempt_count - 1) ELSE attempt_count END, error_code = ? WHERE task_id = ?",
+          next, schedulerDeferred ? 1 : 0, code, body.taskId);
         const existing = await this.ctx.storage.getAlarm();
         if (existing === null || existing > next) await this.ctx.storage.setAlarm(next);
         return json({ result: "accepted", state: "pending", retryAt: next });
