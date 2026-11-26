@@ -7,6 +7,17 @@ describe("image format detection", () => {
     expect(sniffImageFormat(new TextEncoder().encode("RIFF0000WEBP"))?.extension).toBe("webp");
   });
 
+  it("detects both GIF signatures and retains the GIF media type", () => {
+    expect(sniffImageFormat(new TextEncoder().encode("GIF87a"))).toEqual({
+      extension: "gif",
+      contentType: "image/gif"
+    });
+    expect(sniffImageFormat(new TextEncoder().encode("GIF89a"))).toEqual({
+      extension: "gif",
+      contentType: "image/gif"
+    });
+  });
+
   it("rejects non-image content", () => {
     expect(sniffImageFormat(new TextEncoder().encode("<html>not an image</html>"))).toBeNull();
   });
