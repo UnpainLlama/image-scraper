@@ -1,10 +1,11 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
 import { handleAuthRoute, isAuthenticated } from "./auth";
-import { discoverFromHtml, discoverFromCss } from "./discovery";
+import { discoverFromHtml, discoverFromCss, discoverStaticPage } from "./discovery";
 import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl, normalizeSiteListingUrl } from "./site-adapters";
-import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, validatePublicUrl } from "./security";
+import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, probePublicUrl, validatePublicUrl } from "./security";
 import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
 import type { Env, JobMode, JobSettings, JobSnapshot, QueuePayload, StoredTaskPayload } from "./types";
+import { resolveTerminalTarget, validateTerminalPageLimit } from "./terminal";
 export { JobDurableObject } from "./job";
 
 const DEFAULT_BUDGET = 1024 * 1024 * 1024;
@@ -12,7 +13,7 @@ const DEFAULT_MAX_FILE = 50 * 1024 * 1024;
 const MANIFEST_LIMIT = 50_000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 
-interface CreateJobBody { siteUrl: string; pages?: string[]; mode: JobMode; concurrency?: number; maxDepth?: number; eliteBabesMode?: "images" | "galleries"; }
+interface CreateJobBody { siteUrl: string; pages?: string[]; mode: JobMode; concurrency?: number; maxDepth?: number; maxPages?: number; eliteBabesMode?: "images" | "galleries"; followNextPage?: boolean; }
 interface VerifyReport { manifestSha256: string; filesChecked: number; bytesChecked: number; failed: number; }
 interface TaskRegistration { taskId: string; url: string; urlHash: string; depth?: number; }
 
@@ -228,8 +229,10 @@ async function processPage(jobId: string, taskId: string, payload: StoredTaskPay
       if (rendered) html = rendered;
     }
 
-    discovered = discoverSiteSpecificHtml(html, resolvedPageUrl, { eliteBabesMode: settings.eliteBabesMode }) ||
-      discoverFromHtml(html, resolvedPageUrl, settings.maxImagesPerPage || 2000, 2000);
+    discovered = settings.followNextPage
+      ? discoverStaticPage(html, resolvedPageUrl, settings.maxImagesPerPage || 2000)
+      : discoverSiteSpecificHtml(html, resolvedPageUrl, { eliteBabesMode: settings.eliteBabesMode }) ||
+        discoverFromHtml(html, resolvedPageUrl, settings.maxImagesPerPage || 2000, 2000);
   }
   const allImages = [...discovered.images];
   for (const stylesheetUrl of discovered.stylesheets.slice(0, 20)) {
@@ -406,9 +409,10 @@ async function createJob(request: Request, env: Env): Promise<Response> {
       ? Math.min(5, Math.max(1, Math.floor(Number(body.concurrency))))
       : 3,
     maxDepth: body.mode === "crawl" ? Math.min(10, Math.max(0, Math.floor(Number(body.maxDepth ?? 3)))) : 0,
-    maxPages: 100, maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
+    maxPages: validateTerminalPageLimit(body.maxPages), maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
     perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 2000,
-    eliteBabesMode: body.eliteBabesMode === "images" ? "images" : "galleries"
+    eliteBabesMode: body.eliteBabesMode === "images" ? "images" : "galleries",
+    followNextPage: body.followNextPage === true
   };
   const init = await jobRequest(env, jobId, "/init", { jobId, ...settings });
   if (!init.ok) throw new ScrapeError("JOB_INITIALIZATION_FAILED");
@@ -460,8 +464,21 @@ async function buildManifest(env: Env, jobId: string): Promise<Response> {
   }});
 }
 
+async function probeTerminalTarget(request: Request): Promise<Response> {
+  const body = await readJson<{ site?: string; input?: string; eliteBabesMode?: "images" | "galleries"; maxPages?: number }>(request);
+  const target = resolveTerminalTarget(body.site || "auto", body.input || "", body.eliteBabesMode);
+  const pageLimit = validateTerminalPageLimit(body.maxPages);
+  const safeUrl = validatePublicUrl(target.siteUrl);
+  const probe = await probePublicUrl(safeUrl.toString());
+  if (!probe.ok) {
+    return json({ error: "SITE_PROBE_FAILED", status: probe.status, target, maxPages: pageLimit }, 422);
+  }
+  return json({ target, maxPages: pageLimit, probe });
+}
+
 async function routeApi(request: Request, env: Env): Promise<Response> {
   const path = new URL(request.url).pathname;
+  if (path === "/api/terminal/probe" && request.method === "POST") return probeTerminalTarget(request);
   if (path === "/api/jobs" && request.method === "POST") return createJob(request, env);
   const match = path.match(/^\/api\/jobs\/([a-z0-9-]{16,64})(?:\/(pause|resume|cancel|manifest|verify|clear))?$/);
   if (!match) return json({ error: "NOT_FOUND" }, 404);
