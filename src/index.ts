@@ -1,7 +1,7 @@
 import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
 import { handleAuthRoute, isAuthenticated } from "./auth";
 import { discoverFromHtml, discoverFromCss } from "./discovery";
-import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl } from "./site-adapters";
+import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl, normalizeSiteListingUrl } from "./site-adapters";
 import { acquireBrowserPagePermit, browserRequestPatterns, fetchForJob, validatePublicUrl } from "./security";
 import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage";
 import type { Env, JobMode, JobSettings, JobSnapshot, QueuePayload, StoredTaskPayload } from "./types";
@@ -395,7 +395,7 @@ async function createJob(request: Request, env: Env): Promise<Response> {
   if (pages.length > 50) throw new ScrapeError("TOO_MANY_SEED_PAGES");
   const normalizedPages = new Set<string>();
   for (const page of pages) {
-    const url = validatePublicUrl(page, site.toString());
+    const url = validatePublicUrl(normalizeSiteListingUrl(page), site.toString());
     if (url.origin !== site.origin) throw new ScrapeError("SEED_PAGE_OUTSIDE_WEBSITE");
     normalizedPages.add(url.toString());
   }
