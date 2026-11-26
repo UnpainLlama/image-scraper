@@ -1,87 +1,363 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  let activeJobId = localStorage.getItem("image-scraper-active-job") || "";
+  const ACTIVE_JOB_KEY = "image-scraper-active-job";
+  const RECOVERY_JOB_KEY = "image-scraper-recovery-job";
+
+  let activeJobId = localStorage.getItem(ACTIVE_JOB_KEY) || "";
+  let recoveryJobId = localStorage.getItem(RECOVERY_JOB_KEY) || "";
   let currentSnapshot = null;
-  let refreshTimer = null;
   let isAuthenticated = false;
-  let recoveryJobId = localStorage.getItem("image-scraper-recovery-job") || "";
+  let refreshTimer = null;
+  let flow = null;
+  let lastProgressLine = "";
 
-  function readLastConfig() {
-    try {
-      const value = JSON.parse(localStorage.getItem("image-scraper-last-config") || "null");
-      if (!value || typeof value !== "object" || typeof value.siteUrl !== "string") return null;
-      return value;
-    } catch {
-      return null;
+  function appendLine(message, kind = "") {
+    const line = document.createElement("div");
+    line.className = "terminal-line" + (kind ? " " + kind : "");
+    line.textContent = String(message);
+    $("terminal-output").appendChild(line);
+    while ($("terminal-output").childNodes.length > 2500) {
+      $("terminal-output").removeChild($("terminal-output").firstChild);
     }
+    $("terminal-output").scrollTop = $("terminal-output").scrollHeight;
   }
 
-  function currentFormConfig() {
-    return {
-      siteUrl: $("site-url").value.trim(),
-      pages: $("pages").value,
-      mode: $("mode").value,
-      concurrency: Number($("concurrency").value),
-      maxDepth: Number($("depth").value),
-      eliteBabesMode: $("elitebabes-mode").value
-    };
+  function appendBlock(lines, kind = "") {
+    lines.forEach((line) => appendLine(line, kind));
   }
 
-  function applyFormConfig(config) {
-    if (!config) return;
-    $("site-url").value = config.siteUrl || "";
-    $("pages").value = typeof config.pages === "string" ? config.pages : "";
-    $("mode").value = config.mode === "crawl" ? "crawl" : "exact";
-    $("concurrency").value = String(Math.min(5, Math.max(1, Number(config.concurrency) || 3)));
-    $("concurrency-value").textContent = $("concurrency").value;
-    $("depth").value = String(Math.min(10, Math.max(0, Number(config.maxDepth) || 0)));
-    $("elitebabes-mode").value = config.eliteBabesMode === "images" ? "images" : "galleries";
-    $("depth-field").hidden = $("mode").value !== "crawl";
-    updateSourceOptions();
+  function setPrompt(label, hint, placeholder = "Type here") {
+    $("terminal-prompt-label").textContent = label;
+    $("terminal-hint").textContent = hint || "";
+    $("terminal-input").placeholder = placeholder;
+    $("terminal-input").value = "";
+    $("terminal-input").disabled = false;
+    $("terminal-submit").disabled = false;
+    $("terminal-form").hidden = false;
+    $("terminal-input").focus();
   }
 
-  function updateSourceOptions() {
-    const raw = $("site-url").value.trim();
-    let isEliteBabes = false;
-    try { isEliteBabes = /(^|\.)elitebabes\.com$/i.test(new URL(raw).hostname); } catch {}
-    $("elitebabes-mode-field").hidden = !isEliteBabes;
+  function disablePrompt(message) {
+    $("terminal-input").disabled = true;
+    $("terminal-submit").disabled = true;
+    $("terminal-prompt-label").textContent = message || "Session active";
+    $("terminal-hint").textContent = "";
   }
 
-  function rememberRecoveryJob(jobId) {
-    if (!jobId) return;
-    recoveryJobId = jobId;
-    localStorage.setItem("image-scraper-recovery-job", jobId);
-    $("recover-job-id").value = jobId;
-  }
-
-  function lockDashboard(message, configured = true) {
+  function lockConsole(message, configured = true) {
     isAuthenticated = false;
     clearTimeout(refreshTimer);
     refreshTimer = null;
     $("auth-panel").hidden = false;
     $("login-form").hidden = !configured;
-    $("new-job-panel").hidden = true;
+    $("terminal-panel").hidden = true;
     $("job-panel").hidden = true;
     $("logout-button").hidden = true;
     $("auth-notice").textContent = message || "";
     $("app-password").value = "";
+    currentSnapshot = null;
   }
 
-  function enterDashboard() {
+  async function api(path, options = {}) {
+    const response = await fetch(path, {
+      credentials: "same-origin",
+      cache: "no-store",
+      ...options,
+      headers: {
+        "content-type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401 && data.error === "AUTH_REQUIRED") {
+        lockConsole("Session expired. Enter the password again.");
+      }
+      const error = new Error(data.error || "REQUEST_FAILED");
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+    return data;
+  }
+
+  function enterConsole() {
     isAuthenticated = true;
     $("auth-panel").hidden = true;
     $("logout-button").hidden = false;
-    $("recover-job-id").value = recoveryJobId || activeJobId;
-    applyFormConfig(readLastConfig());
-    if (activeJobId) {
-      $("job-id").textContent = "Job " + activeJobId;
-      $("job-panel").hidden = false;
-      $("new-job-panel").hidden = true;
-      refresh();
-    } else {
-      $("job-panel").hidden = true;
-      $("new-job-panel").hidden = false;
+    $("terminal-panel").hidden = false;
+    $("recover-job-id").value = recoveryJobId || "";
+    if (!$("terminal-output").childNodes.length) {
+      appendBlock([
+        "pscraper — image-only remote scraper",
+        "TypeScript Worker runtime · queue-backed downloads · R2 object storage",
+        "Tor and browser-cookie paste are not available in this hosted runtime.",
+        ""
+      ], "muted");
     }
+    if (activeJobId) {
+      openJob(activeJobId, true).catch(() => startNewFlow(true));
+    } else {
+      startNewFlow(true);
+    }
+  }
+
+  function startNewFlow(initial = false) {
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
+    currentSnapshot = null;
+    flow = {
+      step: "site",
+      site: "auto",
+      input: "",
+      maxPages: 100,
+      concurrency: 3,
+      eliteBabesMode: "galleries",
+      prepared: null
+    };
+    $("job-panel").hidden = true;
+    $("terminal-panel").hidden = false;
+    $("terminal-state").textContent = "interactive";
+    $("verification-file").value = "";
+    $("job-notice").textContent = "";
+    $("job-guidance").hidden = true;
+    if (!initial) appendLine("", "muted");
+    appendBlock([
+      "============================================================",
+      " MEDIA SCRAPER",
+      "============================================================",
+      " [1] sex.com     (GIF API search / list)",
+      " [2] rule34      (tag search / list)",
+      " [3] realbooru   (tag search / list)",
+      " [4] elitebabes  (tag / gallery)",
+      " [5] buondua     (home / hot / tag / album)",
+      " [6] static      (image URLs from HTML; follows next link)",
+      " [A] auto        (detect site from URL; search defaults to sex.com)",
+      "",
+      "Free limits: up to 100 pages, 2,000 images and 1 GiB per job.",
+      ""
+    ]);
+    setPrompt("Choose site [1-6 / A]", "Enter a number or site name. A detects the site from a URL.", "A");
+  }
+
+  function siteChoice(raw) {
+    const value = String(raw || "").trim().toLowerCase();
+    const choices = {
+      "1": "sex.com", sex: "sex.com", sexcom: "sex.com", "sex.com": "sex.com",
+      "2": "rule34", r34: "rule34", rule: "rule34", rule34: "rule34",
+      "3": "realbooru", rb: "realbooru", real: "realbooru", realbooru: "realbooru",
+      "4": "elitebabes", eb: "elitebabes", elite: "elitebabes", elitebabes: "elitebabes",
+      "5": "buondua", bd: "buondua", buon: "buondua", buondua: "buondua",
+      "6": "static", static: "static", image: "static", html: "static",
+      a: "auto", auto: "auto", "": "auto"
+    };
+    return choices[value] || null;
+  }
+
+  function looksLikeEliteBabes(value) {
+    try { return /(^|\.)elitebabes\.com$/i.test(new URL(/^https?:\/\//i.test(value) ? value : "https://" + value).hostname); }
+    catch { return false; }
+  }
+
+  function advanceAfterTarget() {
+    flow.step = "pages";
+    appendLine("Target: " + flow.input, "prompt");
+    setPrompt("Maximum pages [Enter = 100]", "Choose 1–100. The Free runtime caps one job at 100 pages.", "100");
+  }
+
+  async function prepareTarget() {
+    flow.step = "probing";
+    $("terminal-state").textContent = "probing";
+    disablePrompt("Checking target");
+    appendLine("Preparing target and checking robots policy / HTTP response…", "muted");
+    try {
+      flow.prepared = await api("/api/terminal/probe", {
+        method: "POST",
+        body: JSON.stringify({
+          site: flow.site,
+          input: flow.input,
+          maxPages: flow.maxPages,
+          eliteBabesMode: flow.eliteBabesMode
+        })
+      });
+      const target = flow.prepared.target;
+      appendLine("Probe passed · HTTP " + flow.prepared.probe.status + " · " + (flow.prepared.probe.contentType || "content type unavailable"), "good");
+      appendBlock([
+        "",
+        "============================================================",
+        " READY",
+        "============================================================",
+        " Site       : " + target.label,
+        " Target     : " + target.siteUrl,
+        " Target type: " + target.targetType,
+        " Pages      : " + flow.maxPages,
+        " Workers    : " + flow.concurrency,
+        target.site === "elitebabes" ? " Media mode : " + target.eliteBabesMode : "",
+        target.site === "static" ? " Pagination : next-link only" : " Pagination : source adapter",
+        "",
+        "[Enter] start  [b] change target  [q] cancel",
+        ""
+      ].filter(Boolean));
+      flow.step = "ready";
+      $("terminal-state").textContent = "ready";
+      setPrompt("Start this scrape? [Enter / B / Q]", "Press Enter to queue the job, B to change target, or Q to cancel.", "Enter");
+    } catch (error) {
+      const status = error.data && error.data.status ? " (HTTP " + error.data.status + ")" : "";
+      appendLine("Probe failed: " + (error.message || "SITE_PROBE_FAILED") + status, "error");
+      appendLine("The target was not queued. Check the URL/site choice, then retry or go back.", "warn");
+      flow.step = "probeFailed";
+      $("terminal-state").textContent = "probe failed";
+      setPrompt("Retry [R], change target [B], or cancel [Q]", "", "R");
+    }
+  }
+
+  async function startJob() {
+    if (!flow || !flow.prepared) return;
+    const target = flow.prepared.target;
+    $("terminal-state").textContent = "starting";
+    disablePrompt("Submitting job");
+    appendLine("Creating queue-backed job…", "muted");
+    try {
+      const result = await api("/api/jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          siteUrl: target.siteUrl,
+          mode: "exact",
+          pages: [],
+          concurrency: flow.concurrency,
+          maxPages: flow.maxPages,
+          eliteBabesMode: target.eliteBabesMode,
+          followNextPage: target.site === "static"
+        })
+      });
+      if (activeJobId && activeJobId !== result.jobId) rememberRecoveryJob(activeJobId);
+      activeJobId = result.jobId;
+      localStorage.setItem(ACTIVE_JOB_KEY, activeJobId);
+      appendLine("Job started: " + activeJobId, "good");
+      $("job-id").textContent = "Job " + activeJobId;
+      $("terminal-state").textContent = "running";
+      $("job-panel").hidden = false;
+      $("verification-file").value = "";
+      render(result.snapshot);
+      flow.step = "running";
+      disablePrompt("Job running — use the controls below");
+      refreshTimer = setTimeout(refresh, 1500);
+    } catch (error) {
+      appendLine("Could not start job: " + (error.message || "JOB_START_FAILED"), "error");
+      $("terminal-state").textContent = "error";
+      flow.step = "ready";
+      setPrompt("Press Enter to retry or Q to cancel", "", "Enter");
+    }
+  }
+
+  $("terminal-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!flow) return;
+    const raw = $("terminal-input").value.trim();
+    appendLine("> " + (raw || "[Enter]"), "prompt");
+    const value = raw.toLowerCase();
+
+    if (flow.step === "site") {
+      const selected = siteChoice(raw);
+      if (!selected) {
+        appendLine("Choose 1–6 or A.", "error");
+        setPrompt("Choose site [1-6 / A]", "Enter a number or site name.", "A");
+        return;
+      }
+      flow.site = selected;
+      appendLine("Selected site: " + selected, "good");
+      flow.step = "target";
+      const prompt = selected === "static" ? "Page URL" :
+        selected === "rule34" || selected === "realbooru" ? "Tags or list URL" :
+        selected === "elitebabes" ? "Tag, home, or gallery URL" :
+        selected === "buondua" ? "Home / hot / tag / album URL or ID" :
+        selected === "sex.com" ? "Search query or list URL" : "URL or search query";
+      setPrompt(prompt, "Enter a URL or a site-specific search term.", "https://… or search term");
+      return;
+    }
+
+    if (flow.step === "target") {
+      if (!raw) {
+        appendLine("A target is required.", "error");
+        setPrompt("URL or search query", "This field cannot be empty.");
+        return;
+      }
+      flow.input = raw;
+      advanceAfterTarget();
+      return;
+    }
+
+    if (flow.step === "pages") {
+      const pages = raw ? Number(raw) : 100;
+      if (!Number.isInteger(pages) || pages < 1 || pages > 100) {
+        appendLine("Enter a whole number from 1 to 100, or press Enter for 100.", "error");
+        setPrompt("Maximum pages [Enter = 100]", "Allowed range: 1–100.", "100");
+        return;
+      }
+      flow.maxPages = pages;
+      flow.step = "workers";
+      appendLine("Page limit: " + pages, "muted");
+      setPrompt("Parallel workers [Enter = 3]", "Choose 1–5. The queue and each job are capped at five workers.", "3");
+      return;
+    }
+
+    if (flow.step === "workers") {
+      const workers = raw ? Number(raw) : 3;
+      if (!Number.isInteger(workers) || workers < 1 || workers > 5) {
+        appendLine("Enter a whole number from 1 to 5, or press Enter for 3.", "error");
+        setPrompt("Parallel workers [Enter = 3]", "Allowed range: 1–5.", "3");
+        return;
+      }
+      flow.concurrency = workers;
+      if (flow.site === "elitebabes" || (flow.site === "auto" && looksLikeEliteBabes(flow.input))) {
+        flow.step = "eliteMode";
+        appendBlock(["", "EliteBabes mode:", " [1] images    (listing thumbnails — faster)", " [2] galleries (open each gallery — full-size)"]);
+        setPrompt("EliteBabes mode [1 / 2]", "Choose listing thumbnails or full-size gallery images.", "2");
+      } else {
+        await prepareTarget();
+      }
+      return;
+    }
+
+    if (flow.step === "eliteMode") {
+      if (["1", "i", "img", "image", "images"].includes(value)) flow.eliteBabesMode = "images";
+      else if (["2", "g", "gallery", "galleries", "full", "hq", ""].includes(value)) flow.eliteBabesMode = "galleries";
+      else {
+        appendLine("Enter 1 for images or 2 for galleries.", "error");
+        setPrompt("EliteBabes mode [1 / 2]", "", "2");
+        return;
+      }
+      await prepareTarget();
+      return;
+    }
+
+    if (flow.step === "probeFailed") {
+      if (["r", "retry", ""].includes(value)) await prepareTarget();
+      else if (["b", "back"].includes(value)) advanceAfterTarget();
+      else if (["q", "quit", "cancel"].includes(value)) startNewFlow();
+      else setPrompt("Retry [R], change target [B], or cancel [Q]", "", "R");
+      return;
+    }
+
+    if (flow.step === "ready") {
+      if (["q", "quit", "cancel"].includes(value)) {
+        appendLine("Cancelled. No job was created.", "muted");
+        startNewFlow();
+      } else if (["b", "back"].includes(value)) {
+        advanceAfterTarget();
+      } else if (["", "y", "yes", "start"].includes(value)) {
+        await startJob();
+      } else {
+        setPrompt("Start this scrape? [Enter / B / Q]", "Press Enter or type Y to start. B changes target; Q cancels.", "Enter");
+      }
+    }
+  });
+
+  function rememberRecoveryJob(jobId) {
+    if (!jobId) return;
+    recoveryJobId = jobId;
+    localStorage.setItem(RECOVERY_JOB_KEY, jobId);
+    $("recover-job-id").value = jobId;
   }
 
   function bytes(value) {
@@ -93,24 +369,9 @@
     return number.toFixed(2) + " " + units[index];
   }
 
-  function notice(message, kind) {
+  function notice(message, kind = "") {
     $("job-notice").textContent = message || "";
-    $("job-notice").className = "notice " + (kind || "");
-  }
-
-  async function api(path, options) {
-    const response = await fetch(path, {
-      credentials: "same-origin",
-      cache: "no-store",
-      ...options,
-      headers: { "content-type": "application/json", ...((options && options.headers) || {}) }
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401 && data.error === "AUTH_REQUIRED") lockDashboard("Session expired. Enter the password to continue.");
-      throw new Error(data.error || "REQUEST_FAILED");
-    }
-    return data;
+    $("job-notice").className = "notice " + kind;
   }
 
   function setButtonState(snapshot) {
@@ -120,55 +381,39 @@
     const allDone = tasks.pending === 0 && snapshot.pendingPages === 0 && snapshot.pendingImages === 0;
     const terminal = ["completed", "cancelled", "abandoned", "verified"].includes(snapshot.status);
     const drained = settled && allDone;
-    const canStartNewAttempt = snapshot.status === "abandoned"
-      ? activePermits === 0 && tasks.leased === 0
-      : terminal && drained;
-    const partialExportState = ["paused", "budget-paused", "verified"].includes(snapshot.status);
-    const canExport = ["completed", "cancelled"].includes(snapshot.status) ? drained : partialExportState && settled;
-    const canClear = snapshot.status === "abandoned"
-      ? activePermits === 0 && tasks.leased === 0
-      : snapshot.verified && allDone && activePermits === 0 && tasks.leased === 0;
+    const canStartNew = terminal && (snapshot.status === "abandoned" ? settled : drained);
+    const partialExport = ["paused", "budget-paused", "verified"].includes(snapshot.status);
+    const canExport = ["completed", "cancelled"].includes(snapshot.status) ? drained : partialExport && settled;
+    const canClear = snapshot.status === "abandoned" ? settled : snapshot.verified && allDone && settled;
+
     $("pause-button").hidden = snapshot.status !== "running";
     $("resume-button").hidden = !["paused", "budget-paused"].includes(snapshot.status) && !(snapshot.status === "verified" && !allDone);
-    $("new-attempt-button").hidden = !canStartNewAttempt;
+    $("new-attempt-button").hidden = !canStartNew;
     $("cancel-button").hidden = !["running", "paused", "budget-paused"].includes(snapshot.status) && !(snapshot.status === "verified" && !allDone);
     $("manifest-button").disabled = !canExport;
     $("verify-button").disabled = !$("verification-file").files.length || !canExport;
     $("clear-button").disabled = !canClear;
     $("export-panel").hidden = !canExport && !canClear;
     $("clear-button").textContent = snapshot.status === "abandoned" ? "Delete abandoned job" : "Clear verified job";
-    $("verification-state").textContent = snapshot.verified
-      ? "Verification accepted."
-      : "Not verified.";
-    const guidance = $("job-guidance");
-    let guidanceText = "";
-    if (snapshot.status === "cancelled") {
-      guidanceText = drained
-        ? "Stopped. Start a new attempt to try again. This job remains available to export."
-        : "Stopped. Waiting for active work to finish.";
-    } else if (snapshot.status === "completed" && snapshot.failedImages > 0) {
-      guidanceText = "Finished with " + snapshot.failedImages.toLocaleString() + " failed image downloads. Start a new attempt to try again.";
-    } else if (snapshot.status === "completed") {
-      guidanceText = "Finished. Export and verify your images before clearing this job.";
-    } else if (snapshot.status === "abandoned") {
-      guidanceText = canClear
-        ? "This job is abandoned. Delete it now or start a new attempt."
-        : "This job is abandoned. Waiting for active work to finish.";
-    } else if (snapshot.status === "verified" && allDone) {
-      guidanceText = "Images verified. You can clear this job or start a new attempt.";
-    }
-    guidance.textContent = guidanceText;
-    guidance.hidden = !guidanceText;
-    const countdown = $("retention-countdown");
+    $("verification-state").textContent = snapshot.verified ? "Verification accepted." : "Not verified.";
+
+    let guidance = "";
+    if (snapshot.status === "cancelled") guidance = drained ? "Stopped. Export this partial job or start a new scrape." : "Stopped. Waiting for active work to finish.";
+    else if (snapshot.status === "completed" && snapshot.failedImages > 0) guidance = "Finished with " + snapshot.failedImages.toLocaleString() + " failed downloads. Export the results or start a new scrape.";
+    else if (snapshot.status === "completed") guidance = "Finished. Export and verify your images before clearing this job.";
+    else if (snapshot.status === "abandoned") guidance = settled ? "This job is abandoned. Delete it or start a new scrape." : "This job is abandoned. Waiting for active work to finish.";
+    else if (snapshot.status === "verified" && allDone) guidance = "Images verified. You can clear this job or start a new scrape.";
+    $("job-guidance").textContent = guidance;
+    $("job-guidance").hidden = !guidance;
+
     if (snapshot.cleanupAt) {
       const remaining = Math.max(0, snapshot.cleanupAt - Date.now());
       const days = Math.floor(remaining / 86400000);
       const hours = Math.floor((remaining % 86400000) / 3600000);
-      countdown.hidden = false;
-      countdown.textContent = "Automatic deletion in " + days + " days, " + hours + " hours if this abandoned job is not resumed or cleared.";
+      $("retention-countdown").hidden = false;
+      $("retention-countdown").textContent = "Automatic deletion in " + days + " days, " + hours + " hours if this abandoned job is not resumed or cleared.";
     } else {
-      countdown.hidden = true;
-      countdown.textContent = "";
+      $("retention-countdown").hidden = true;
     }
   }
 
@@ -180,26 +425,34 @@
     $("stored-count").textContent = snapshot.imagesStored.toLocaleString();
     $("failed-count").textContent = snapshot.failedImages.toLocaleString();
     $("storage-count").textContent = bytes(snapshot.bytesStored) + " / " + bytes(snapshot.budgetBytes);
-    $("storage-meter").style.width = Math.min(100, (snapshot.bytesStored / Math.max(1, snapshot.budgetBytes)) * 100) + "%";
+    $("storage-meter").style.width = Math.min(100, snapshot.bytesStored / Math.max(1, snapshot.budgetBytes) * 100) + "%";
 
     const errors = snapshot.failedByCode || [];
     $("error-list").hidden = errors.length === 0;
-    $("error-list").innerHTML = "";
+    $("error-list").replaceChildren();
     if (errors.length) {
       const heading = document.createElement("strong");
-      heading.textContent = "Error counts (no source URLs retained)";
+      heading.textContent = "Error counts (source URLs are not displayed)";
       $("error-list").appendChild(heading);
       errors.forEach((item) => {
-        const line = document.createElement("div");
+        const row = document.createElement("div");
         const code = document.createElement("span");
         const count = document.createElement("b");
         code.textContent = item.code;
         count.textContent = String(item.count);
-        line.append(code, count);
-        $("error-list").appendChild(line);
+        row.append(code, count);
+        $("error-list").appendChild(row);
       });
     }
     setButtonState(snapshot);
+
+    const progress = snapshot.status + " · pages " + snapshot.pagesCompleted + "/" + snapshot.pagesDiscovered +
+      " · images " + snapshot.imagesStored + "/" + snapshot.imagesDiscovered +
+      " · failed " + snapshot.failedImages + " · " + bytes(snapshot.bytesStored);
+    if (progress !== lastProgressLine) {
+      appendLine(progress, snapshot.status === "completed" ? "good" : "muted");
+      lastProgressLine = progress;
+    }
   }
 
   async function refresh() {
@@ -212,12 +465,12 @@
         Number(snapshot.activePermits || 0) === 0 && snapshot.bytesReserved === 0;
       const noActiveWorkers = Number(snapshot.activePermits || 0) === 0 &&
         (snapshot.taskCounts?.leased || 0) === 0;
-      const settledSnapshot = snapshot.status === "verified" && noActiveWorkers && snapshot.bytesReserved === 0;
-      const abandonedSettled = snapshot.status === "abandoned" && noActiveWorkers;
-      if (abandonedSettled || settledSnapshot ||
-        (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
+      const settledVerified = snapshot.status === "verified" && noActiveWorkers && snapshot.bytesReserved === 0;
+      const settledAbandoned = snapshot.status === "abandoned" && noActiveWorkers;
+      if (settledAbandoned || settledVerified || (["completed", "cancelled"].includes(snapshot.status) && queueDrained)) {
         clearTimeout(refreshTimer);
         refreshTimer = null;
+        $("terminal-state").textContent = snapshot.status;
       } else {
         refreshTimer = setTimeout(refresh, 4000);
       }
@@ -228,7 +481,7 @@
     }
   }
 
-  async function action(name) {
+  async function jobAction(name) {
     if (!activeJobId) return;
     try {
       let body = {};
@@ -239,196 +492,128 @@
         const suggested = Math.min(1, currentSnapshot.budgetBytes / (1024 ** 3) + 0.1).toFixed(2);
         const value = window.prompt("New total storage budget in GiB (maximum 1.00 on Free)", suggested);
         if (value === null) return;
-        const budgetBytes = Math.floor(Number(value) * (1024 ** 3));
-        if (!Number.isSafeInteger(budgetBytes) || budgetBytes <= currentSnapshot.bytesStored) {
-          throw new Error("BUDGET_MUST_EXCEED_STORED_BYTES");
-        }
+        const budgetBytes = Math.floor(Number(value) * 1024 ** 3);
+        if (!Number.isSafeInteger(budgetBytes) || budgetBytes <= currentSnapshot.bytesStored) throw new Error("BUDGET_MUST_EXCEED_STORED_BYTES");
         if (budgetBytes > 1024 ** 3) throw new Error("FREE_TIER_BUDGET_LIMIT");
         body = { budgetBytes };
       }
       await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/" + name, {
-        method: "POST",
-        body: JSON.stringify(body)
+        method: "POST", body: JSON.stringify(body)
       });
-      notice(name === "cancel" ? "Stop requested. Queued tasks are being stopped." : "Job updated.", "success");
+      notice(name === "cancel" ? "Stop requested. Queued work is stopping." : "Job updated.", "success");
       await refresh();
     } catch (error) {
       notice(error.message === "FREE_TIER_BUDGET_LIMIT"
-        ? "The Free-tier job limit is 1 GiB. Export, verify and clear this job before starting another job."
+        ? "The Free-tier job limit is 1 GiB. Export, verify and clear this job before starting another."
         : error.message || "REQUEST_FAILED", "error");
     }
   }
 
-  async function openJob(jobId) {
+  async function openJob(jobId, quiet = false) {
     const candidate = String(jobId || "").trim();
-    if (!/^[a-z0-9-]{16,64}$/.test(candidate)) {
-      notice("Enter a valid job ID.", "error");
-      return;
-    }
+    if (!/^[a-z0-9-]{16,64}$/.test(candidate)) throw new Error("Enter a valid job ID.");
     try {
       const snapshot = await api("/api/jobs/" + encodeURIComponent(candidate), { method: "GET", headers: {} });
       if (activeJobId && activeJobId !== candidate) rememberRecoveryJob(activeJobId);
       activeJobId = candidate;
-      localStorage.setItem("image-scraper-active-job", activeJobId);
-      $("recover-job-id").value = recoveryJobId || "";
+      localStorage.setItem(ACTIVE_JOB_KEY, activeJobId);
       $("job-id").textContent = "Job " + activeJobId;
       $("job-panel").hidden = false;
-      $("new-job-panel").hidden = true;
+      $("verification-file").value = "";
+      lastProgressLine = "";
       render(snapshot);
-      notice("Existing job opened.", "success");
-      refresh();
+      if (!quiet) appendLine("Reopened job " + activeJobId, "good");
+      $("terminal-state").textContent = snapshot.status;
+      flow = { step: "running" };
+      disablePrompt("Job open — use the controls below");
+      if (!["completed", "cancelled", "verified", "abandoned"].includes(snapshot.status)) {
+        refreshTimer = setTimeout(refresh, 1500);
+      }
+      return snapshot;
     } catch (error) {
-      notice(error.message || "JOB_NOT_FOUND", "error");
+      if (!quiet) appendLine("Could not open job: " + (error.message || "JOB_NOT_FOUND"), "error");
+      throw error;
     }
   }
 
-  $("site-url").addEventListener("input", updateSourceOptions);
-  $("elitebabes-mode").addEventListener("change", () => {
-    const previous = readLastConfig() || {};
-    previous.eliteBabesMode = $("elitebabes-mode").value;
-    try { localStorage.setItem("image-scraper-last-config", JSON.stringify({ ...previous, ...currentFormConfig() })); } catch {}
+  $("recover-button").addEventListener("click", async () => {
+    try { await openJob($("recover-job-id").value); }
+    catch (error) { appendLine(error.message || "JOB_NOT_FOUND", "error"); }
   });
-
-  $("concurrency").addEventListener("input", () => {
-    $("concurrency-value").textContent = $("concurrency").value;
-  });
-  $("mode").addEventListener("change", () => {
-    $("depth-field").hidden = $("mode").value !== "crawl";
-  });
-
-  $("job-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const config = currentFormConfig();
-    const pages = config.pages.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-    $("start-button").disabled = true;
-    $("start-button").textContent = "Starting…";
-    $("start-notice").textContent = "";
-    $("start-notice").className = "notice";
-    try {
-      const result = await api("/api/jobs", {
-        method: "POST",
-        body: JSON.stringify({
-          siteUrl: config.siteUrl,
-          pages,
-          mode: config.mode,
-          concurrency: config.concurrency,
-          maxDepth: config.maxDepth,
-          eliteBabesMode: config.eliteBabesMode
-        })
-      });
-      if (activeJobId && activeJobId !== result.jobId && !recoveryJobId) rememberRecoveryJob(activeJobId);
-      localStorage.setItem("image-scraper-last-config", JSON.stringify(config));
-      activeJobId = result.jobId;
-      localStorage.setItem("image-scraper-active-job", activeJobId);
-      $("job-id").textContent = "Job " + activeJobId;
-      $("job-panel").hidden = false;
-      $("new-job-panel").hidden = true;
-      $("verification-file").value = "";
-      render(result.snapshot);
-      notice("Job started.", "success");
-      refreshTimer = setTimeout(refresh, 1500);
-    } catch (error) {
-      $("start-notice").textContent = error.message || "JOB_START_FAILED";
-      $("start-notice").className = "notice error";
-    } finally {
-      $("start-button").disabled = false;
-      $("start-button").textContent = "Start scraping";
-    }
-  });
-
-  $("recover-button").addEventListener("click", () => openJob($("recover-job-id").value));
   $("recover-job-id").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") openJob($("recover-job-id").value);
-  });
-  $("pause-button").addEventListener("click", () => action("pause"));
-  $("resume-button").addEventListener("click", () => action("resume"));
-  $("cancel-button").addEventListener("click", () => {
-    if (window.confirm("Stop this job? Downloaded images will remain available for export.")) action("cancel");
+    if (event.key === "Enter") $("recover-button").click();
   });
 
+  $("pause-button").addEventListener("click", () => jobAction("pause"));
+  $("resume-button").addEventListener("click", () => jobAction("resume"));
+  $("cancel-button").addEventListener("click", () => {
+    if (window.confirm("Stop this job? Downloaded images will remain available for export.")) jobAction("cancel");
+  });
   $("new-attempt-button").addEventListener("click", () => {
-    if (!activeJobId || !currentSnapshot || !["completed", "cancelled", "abandoned"].includes(currentSnapshot.status)) return;
+    if (!activeJobId) return;
     rememberRecoveryJob(activeJobId);
-    applyFormConfig(readLastConfig());
-    $("job-panel").hidden = true;
-    $("new-job-panel").hidden = false;
-    $("new-attempt-info").hidden = false;
-    $("new-attempt-info").textContent = "Previous job " + activeJobId + " is still saved. Reopen it above to export or clear it.";
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    activeJobId = "";
+    localStorage.removeItem(ACTIVE_JOB_KEY);
+    lastProgressLine = "";
+    startNewFlow();
   });
 
   $("manifest-button").addEventListener("click", async () => {
     if (!activeJobId) return;
     try {
-      const response = await fetch("/api/jobs/" + encodeURIComponent(activeJobId) + "/manifest", { credentials: "same-origin", cache: "no-store" });
+      const response = await fetch("/api/jobs/" + encodeURIComponent(activeJobId) + "/manifest", {
+        credentials: "same-origin", cache: "no-store"
+      });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
-        if (response.status === 401 && data.error === "AUTH_REQUIRED") lockDashboard("Session expired. Enter the password to continue.");
         throw new Error(data.error || "MANIFEST_FAILED");
       }
-      const blob = await response.blob();
+      const file = await response.blob();
       const link = document.createElement("a");
-      const objectUrl = URL.createObjectURL(blob);
+      const objectUrl = URL.createObjectURL(file);
       link.href = objectUrl;
       link.download = "manifest-" + activeJobId + ".json";
       document.body.appendChild(link);
       link.click();
       link.remove();
       URL.revokeObjectURL(objectUrl);
-      notice("Manifest downloaded. Use scripts/export.sh, then scripts/verify.sh.", "success");
-    } catch (error) {
-      notice(error.message || "MANIFEST_FAILED", "error");
-    }
+      notice("Manifest downloaded. Export and verify it with the repository scripts.", "success");
+    } catch (error) { notice(error.message || "MANIFEST_FAILED", "error"); }
   });
 
   $("verification-file").addEventListener("change", () => {
     if (currentSnapshot) setButtonState(currentSnapshot);
   });
-
   $("verify-button").addEventListener("click", async () => {
     const file = $("verification-file").files[0];
-    if (!file) return;
+    if (!file || !activeJobId) return;
     try {
       const report = JSON.parse(await file.text());
       const result = await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/verify", {
-        method: "POST",
-        body: JSON.stringify(report)
+        method: "POST", body: JSON.stringify(report)
       });
-      notice(result.verified ? "Local export script attestation accepted." : "Attestation did not pass.", result.verified ? "success" : "error");
+      notice(result.verified ? "Local export verification accepted." : "Verification did not pass.", result.verified ? "success" : "error");
       await refresh();
-    } catch (error) {
-      notice(error.message || "VERIFICATION_FAILED", "error");
-    }
+    } catch (error) { notice(error.message || "VERIFICATION_FAILED", "error"); }
   });
 
   $("clear-button").addEventListener("click", async () => {
     if (!activeJobId || !currentSnapshot ||
       (currentSnapshot.status !== "abandoned" && !currentSnapshot.verified)) return;
-    if (!window.confirm("Delete all R2 objects for this job and erase its Durable Object state? This cannot be undone.")) return;
+    if (!window.confirm("Delete all R2 objects for this job and erase its job state? This cannot be undone.")) return;
     $("clear-button").disabled = true;
     try {
-      const receipt = await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/clear", { method: "POST", body: "{}" });
+      const receipt = await api("/api/jobs/" + encodeURIComponent(activeJobId) + "/clear", {
+        method: "POST", body: "{}"
+      });
       clearTimeout(refreshTimer);
-      $("job-status").textContent = "cleared";
-      $("job-notice").textContent = "Cleared. " + receipt.deletedObjects + " R2 objects deleted; the prefix was confirmed empty and job state was deleted.";
-      $("job-notice").className = "notice success";
-      $("clear-button").disabled = true;
-      $("manifest-button").disabled = true;
-      $("pause-button").disabled = true;
-      $("resume-button").disabled = true;
-      $("cancel-button").disabled = true;
+      appendLine("Cleared " + receipt.deletedObjects + " R2 objects. Job state was deleted.", "good");
       currentSnapshot = null;
       activeJobId = "";
-      localStorage.removeItem("image-scraper-active-job");
+      localStorage.removeItem(ACTIVE_JOB_KEY);
       $("job-panel").hidden = true;
       $("retention-countdown").hidden = true;
-      $("new-job-panel").hidden = false;
-      $("recover-job-id").value = recoveryJobId;
-      $("new-attempt-info").hidden = true;
-      $("job-guidance").hidden = true;
-      applyFormConfig(readLastConfig());
-      $("start-notice").textContent = "";
-      $("start-notice").className = "notice";
+      startNewFlow();
     } catch (error) {
       notice(error.message || "CLEAR_FAILED", "error");
       if (currentSnapshot) setButtonState(currentSnapshot);
@@ -447,7 +632,8 @@
         body: JSON.stringify({ password })
       });
       $("app-password").value = "";
-      enterDashboard();
+      $("terminal-output").replaceChildren();
+      enterConsole();
     } catch (error) {
       $("auth-notice").textContent = error.message === "LOGIN_RATE_LIMITED"
         ? "Too many attempts. Try again after the lockout expires."
@@ -456,30 +642,28 @@
           : "Login failed. Check the Worker secrets and try again.";
     } finally {
       $("login-button").disabled = false;
-      $("login-button").textContent = "Unlock dashboard";
+      $("login-button").textContent = "Unlock console";
     }
   });
 
   $("logout-button").addEventListener("click", async () => {
-    try {
-      await api("/api/auth/logout", { method: "POST", body: "{}" });
-    } finally {
-      lockDashboard("Dashboard locked.");
-    }
+    try { await api("/api/auth/logout", { method: "POST", body: "{}" }); }
+    finally { lockConsole("Console locked."); }
   });
 
   async function boot() {
     try {
       const status = await api("/api/auth/status", { method: "GET", headers: {} });
       if (!status.configured) {
-        lockDashboard("Password login is not configured. Add APP_PASSWORD and SESSION_SECRET as Worker secrets.", false);
+        lockConsole("Password login is not configured. Add APP_PASSWORD and SESSION_SECRET as Worker secrets.", false);
       } else if (status.authenticated) {
-        enterDashboard();
+        $("terminal-output").replaceChildren();
+        enterConsole();
       } else {
-        lockDashboard("Enter the password to unlock the dashboard.");
+        lockConsole("Enter the password to unlock the remote console.");
       }
     } catch {
-      lockDashboard("Unable to check authentication. Refresh the page to try again.");
+      lockConsole("Unable to check authentication. Refresh the page to try again.");
     }
   }
 

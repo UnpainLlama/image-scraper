@@ -96,3 +96,29 @@ export function discoverFromCss(css: string, baseUrl: string, maximum = MAX_IMAG
 }
 
 export function isImageFileUrl(value: string): boolean { return IMAGE_EXTENSIONS.test(value); }
+
+/** Static-site terminal mode follows only an explicit next-page control. */
+export function discoverStaticPage(html: string, baseUrl: string, imageLimit = MAX_IMAGES_PER_PAGE): DiscoveryResult {
+  const discovered = discoverFromHtml(html, baseUrl, imageLimit, 0);
+  const { document } = parseHTML(html);
+  const anchors = Array.from(document.querySelectorAll("a[href]"));
+  const next = anchors.find(anchor => {
+    const rel = (anchor.getAttribute("rel") || "").toLowerCase().split(/\\s+/);
+    const label = (anchor.textContent || "").trim().toLowerCase();
+    const classes = (anchor.getAttribute("class") || "").toLowerCase();
+    return rel.includes("next") || label === "next" || label.includes("next page") || classes.includes("next");
+  });
+  const href = next?.getAttribute("href");
+  if (href) {
+    try {
+      const nextUrl = new URL(href, baseUrl);
+      if ((nextUrl.protocol === "http:" || nextUrl.protocol === "https:") &&
+          nextUrl.origin === new URL(baseUrl).origin) {
+        nextUrl.hash = "";
+        discovered.pages = [nextUrl.toString()];
+      }
+    } catch { /* Invalid next links are ignored. */ }
+  }
+  discovered.followPages = true;
+  return discovered;
+}

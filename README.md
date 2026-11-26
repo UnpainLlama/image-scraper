@@ -4,7 +4,7 @@ A private, image-only Cloudflare collection tool. It discovers image files on su
 
 ## Runtime
 
-The scraper engine is TypeScript and runs on Cloudflare Workers, Queues, SQLite-backed Durable Objects and R2. It does not require Python, a Docker image, Cloudflare Containers, a Linux VM, or a remote shell. The browser dashboard is the job interface; it does not expose a general-purpose terminal.
+The scraper engine is TypeScript and runs on Cloudflare Workers, Queues, SQLite-backed Durable Objects and R2. It does not require Python, a Docker image, Cloudflare Containers, a Linux VM, or a remote shell. The browser interface is a guided terminal-style console, not a general-purpose operating-system shell.
 
 ## What it does
 
@@ -28,7 +28,7 @@ The scraper automatically selects an image-only adapter for these supported host
 - **Buondua.com** — album listings, album-scoped image extraction, 20-item listing offsets, and numbered album pages.
 - **Other static websites** — generic HTML and CSS image discovery.
 
-**Exact mode** processes the supplied seed pages plus bounded continuations explicitly produced by a supported site adapter (such as an album page or pagination offset). It does not follow arbitrary links. **Crawl mode** additionally follows generic same-origin links up to the configured depth.
+The guided console uses **Exact mode** with the selected adapter. Static mode follows only an explicit same-origin next-page control; it does not spider every link on the website. The lower-level API retains **Crawl mode** for callers that explicitly need generic same-origin links up to a configured depth.
 
 Site layouts and private APIs can change. The fixture tests simulate known HTML/API responses; they do not guarantee that every live site will accept a request or keep the same markup.
 
@@ -44,7 +44,7 @@ Site layouts and private APIs can change. The fixture tests simulate known HTML/
 - Dashboard access uses a password-only login. The password and session-signing key are Worker secrets, never application files.
 - API requests require a signed, HTTP-only session cookie. Sessions expire after 12 hours, and login attempts are throttled to five per 15-minute window.
 - Application logging and Cloudflare Worker observability are disabled in wrangler.jsonc.
-- The scraper does not provide Tor/SOCKS routing, pasted browser cookies, a general shell, or a mechanism to bypass logins, CAPTCHAs, paywalls or access controls.
+- The hosted console does not provide Tor/SOCKS routing or pasted browser cookies. It does not expose a general-purpose shell or provide a mechanism to bypass logins, CAPTCHAs, paywalls or access controls.
 
 ## Free-tier defaults
 
@@ -81,7 +81,7 @@ Cloudflare resources (the existing R2 bucket, two Queues and Durable Object name
 
 ## Export
 
-Download the manifest from the dashboard, then use the scripts in scripts/:
+Download the manifest from the terminal console, then use the scripts in scripts/:
 
     export R2_ACCOUNT_ID="your-cloudflare-account-id"
     export R2_ACCESS_KEY_ID="your-r2-read-key"
@@ -93,7 +93,7 @@ Download the manifest from the dashboard, then use the scripts in scripts/:
     scripts/export.sh
     scripts/verify.sh manifest-JOB_ID.json "$DEST_DIR" > verification-report.json
 
-Upload verification-report.json in the dashboard. Clear is enabled only after the report matches the manifest recorded for that job.
+Upload verification-report.json in the terminal console. Clear is enabled only after the report matches the manifest recorded for that job. The Worker stores images as content-addressed objects (`objects/<sha256>.<ext>`); an export therefore retains those hash-based names rather than reconstructing per-gallery folders from the former Python CLI.
 
 ## Important limits
 
