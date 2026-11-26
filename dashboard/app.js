@@ -225,6 +225,7 @@
       if (name === "resume" && currentSnapshot &&
         ["budget-paused", "verified"].includes(currentSnapshot.status) &&
         currentSnapshot.bytesStored >= currentSnapshot.budgetBytes * 0.95) {
+        if (currentSnapshot.bytesStored >= 1024 ** 3) throw new Error("FREE_TIER_BUDGET_LIMIT");
         const suggested = Math.min(1, currentSnapshot.budgetBytes / (1024 ** 3) + 0.1).toFixed(2);
         const value = window.prompt("New total storage budget in GiB (maximum 1.00 on Free)", suggested);
         if (value === null) return;
