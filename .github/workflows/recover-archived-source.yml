@@ -29,6 +29,8 @@ jobs:
           - scraper/session.py
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 19cd83847bc4371025085f044675fdae263c2508
       - name: Reconstruct archived Python source
         run: |
           python - <<'PY'
