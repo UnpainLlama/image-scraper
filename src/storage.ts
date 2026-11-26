@@ -177,6 +177,7 @@ export async function putStreamAndHash(
 
   const uploadPart = async (): Promise<void> => {
     if (!partBytes) return;
+    await reservePending(true);
     const body = concatenateChunks(partChunks, partBytes);
     if (!multipart) multipart = await bucket.createMultipartUpload(temporaryKey, {
       httpMetadata: putOptions.httpMetadata
