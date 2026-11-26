@@ -36,6 +36,16 @@
   "env": {
     "staging": {
       "name": "image-scraper-staging",
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "enabled": true,
+          "invocation_logs": false,
+          "head_sampling_rate": 1,
+          "redact_query_string": true
+        },
+        "traces": { "enabled": false }
+      },
       "workers_dev": true,
       "assets": {
         "directory": "./dashboard",
@@ -65,8 +75,13 @@
     }
   },
   "observability": {
-    "enabled": false,
-    "logs": { "enabled": false, "invocation_logs": false },
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false,
+      "head_sampling_rate": 1,
+      "redact_query_string": true
+    },
     "traces": { "enabled": false }
   }
 }

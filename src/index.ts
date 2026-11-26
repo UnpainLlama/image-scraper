@@ -1,4 +1,4 @@
-import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter } from "./http";
+import { json, readJson, safeErrorCode, sha256Text, ScrapeError, parseRetryAfter, asStageFailure } from "./http";
 import { handleAuthRoute, isAuthenticated } from "./auth";
 import { discoverFromHtml, discoverFromCss, discoverStaticPage } from "./discovery";
 import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl, normalizeSiteListingUrl } from "./site-adapters";
@@ -293,15 +293,21 @@ async function reserveBytes(env: Env, jobId: string, permitId: string, bytes: nu
   throw new ScrapeError("BUDGET_RESERVATION_UNAVAILABLE", true, 3);
 }
 
+async function imageStage<T>(code: string, operation: () => Promise<T>): Promise<T> {
+  try { return await operation(); }
+  catch (error) { throw asStageFailure(error, code); }
+}
+
 async function processImage(jobId: string, taskId: string, payload: StoredTaskPayload, env: Env): Promise<void> {
-  const settingsResponse = await jobRequest(env, jobId, "/settings");
+  const settingsResponse = await imageStage("JOB_SETTINGS_FETCH_FAILED", () => jobRequest(env, jobId, "/settings"));
   if (!settingsResponse.ok) throw new ScrapeError("JOB_STATE_UNAVAILABLE", true, 3);
-  const settings = await settingsResponse.json() as JobSettings;
-  const fetched = await fetchForJob(env, jobId, payload.url);
+  const settings = await imageStage("JOB_SETTINGS_PARSE_FAILED", async () => await settingsResponse.json() as JobSettings);
+  const fetched = await imageStage("IMAGE_FETCH_FAILED", () => fetchForJob(env, jobId, payload.url));
   const permitId = fetched.permitId;
   const temporaryKey = "tmp/jobs/" + jobId + "/" + taskId;
   let claimOwned = false;
   let claimedHash: string | null = null;
+  let primaryFailure = false;
 
   try {
     if (fetched.response.status === 429 || fetched.response.status >= 500) {
@@ -311,27 +317,31 @@ async function processImage(jobId: string, taskId: string, payload: StoredTaskPa
     const lengthHeader = Number(fetched.response.headers.get("content-length") || "0");
     if (lengthHeader > settings.maxFileBytes) throw new ScrapeError("FILE_TOO_LARGE");
     if (!fetched.response.body) throw new ScrapeError("EMPTY_IMAGE_RESPONSE");
-    const streamResult = await putStreamAndHash(env.IMAGES, temporaryKey, fetched.response.body as ReadableStream<Uint8Array>,
-      settings.maxFileBytes, bytes => reserveBytes(env, jobId, permitId, bytes),
-      fetched.response.headers.get("content-type") || "application/octet-stream");
+    const streamResult = await imageStage("IMAGE_STREAM_WRITE_FAILED", () =>
+      putStreamAndHash(env.IMAGES, temporaryKey, fetched.response.body as ReadableStream<Uint8Array>,
+        settings.maxFileBytes, bytes => reserveBytes(env, jobId, permitId, bytes),
+        fetched.response.headers.get("content-type") || "application/octet-stream")
+    );
     const format = sniffImageFormat(streamResult.prefix);
     if (!format || streamResult.size < 1) throw new ScrapeError("NOT_AN_IMAGE");
 
     const finalKey = "jobs/" + jobId + "/objects/" + streamResult.sha256 + "." + format.extension;
-    const claimResponse = await jobRequest(env, jobId, "/content/claim", {
+    const claimResponse = await imageStage("CONTENT_CLAIM_REQUEST_FAILED", () => jobRequest(env, jobId, "/content/claim", {
       sha256: streamResult.sha256, taskId, tempKey: temporaryKey, finalKey, size: streamResult.size
-    });
+    }));
     if (!claimResponse.ok) throw new ScrapeError("CONTENT_CLAIM_UNAVAILABLE", true, 3);
-    const claim = await claimResponse.json() as { result: string };
+    const claim = await imageStage("CONTENT_CLAIM_PARSE_FAILED", async () => await claimResponse.json() as { result: string });
     if (claim.result === "stored") {
-      await env.IMAGES.delete(temporaryKey);
-      const releaseResponse = await jobRequest(env, jobId, "/reservation/release", { permitId });
+      await imageStage("R2_TEMP_OBJECT_DELETE_FAILED", () => env.IMAGES.delete(temporaryKey));
+      const releaseResponse = await imageStage("R2_RESERVATION_RELEASE_REQUEST_FAILED", () =>
+        jobRequest(env, jobId, "/reservation/release", { permitId }));
       if (!releaseResponse.ok) throw new ScrapeError("RESERVATION_RELEASE_FAILED", true, 3);
       return;
     }
     if (claim.result === "in_progress") {
-      await env.IMAGES.delete(temporaryKey);
-      const releaseResponse = await jobRequest(env, jobId, "/reservation/release", { permitId });
+      await imageStage("R2_TEMP_OBJECT_DELETE_FAILED", () => env.IMAGES.delete(temporaryKey));
+      const releaseResponse = await imageStage("R2_RESERVATION_RELEASE_REQUEST_FAILED", () =>
+        jobRequest(env, jobId, "/reservation/release", { permitId }));
       if (!releaseResponse.ok) throw new ScrapeError("RESERVATION_RELEASE_FAILED", true, 3);
       throw new ScrapeError("CONTENT_CLAIM_BUSY", true, 30);
     }
@@ -339,29 +349,38 @@ async function processImage(jobId: string, taskId: string, payload: StoredTaskPa
     claimOwned = true;
     claimedHash = streamResult.sha256;
 
-    const current = await env.IMAGES.head(finalKey);
+    const current = await imageStage("R2_FINAL_OBJECT_HEAD_FAILED", () => env.IMAGES.head(finalKey));
     if (!current || current.size !== streamResult.size) {
-      if (current) await env.IMAGES.delete(finalKey);
-      const temporaryObject = await env.IMAGES.get(temporaryKey);
+      if (current) await imageStage("R2_FINAL_OBJECT_DELETE_FAILED", () => env.IMAGES.delete(finalKey));
+      const temporaryObject = await imageStage("R2_TEMP_OBJECT_READ_FAILED", () => env.IMAGES.get(temporaryKey));
       if (!temporaryObject || temporaryObject.size !== streamResult.size) throw new ScrapeError("TEMP_OBJECT_MISSING", true, 3);
-      await env.IMAGES.put(finalKey, temporaryObject.body, {
+      await imageStage("R2_FINAL_OBJECT_WRITE_FAILED", () => env.IMAGES.put(finalKey, temporaryObject.body, {
         httpMetadata: { contentType: format.contentType },
         customMetadata: { sha256: streamResult.sha256 }
-      });
+      }));
     }
-    const verified = await env.IMAGES.head(finalKey);
+    const verified = await imageStage("R2_FINAL_OBJECT_VERIFY_FAILED", () => env.IMAGES.head(finalKey));
     if (!verified || verified.size !== streamResult.size) throw new ScrapeError("FINAL_OBJECT_SIZE_MISMATCH", true, 3);
-    await env.IMAGES.delete(temporaryKey);
-    const commit = await jobRequest(env, jobId, "/content/commit", { sha256: streamResult.sha256, taskId, permitId, size: streamResult.size });
+    await imageStage("R2_TEMP_OBJECT_DELETE_FAILED", () => env.IMAGES.delete(temporaryKey));
+    const commit = await imageStage("CONTENT_COMMIT_REQUEST_FAILED", () =>
+      jobRequest(env, jobId, "/content/commit", { sha256: streamResult.sha256, taskId, permitId, size: streamResult.size }));
     if (!commit.ok) throw new ScrapeError("CONTENT_COMMIT_FAILED", true, 3);
-    const commitResult = await commit.json() as { result: string };
+    const commitResult = await imageStage("CONTENT_COMMIT_PARSE_FAILED", async () => await commit.json() as { result: string });
     if (commitResult.result !== "stored") throw new ScrapeError("CONTENT_COMMIT_UNCONFIRMED", true, 3);
     claimOwned = false;
+  } catch (error) {
+    primaryFailure = true;
+    throw error;
   } finally {
     if (claimOwned && claimedHash) {
       await jobRequest(env, jobId, "/content/release", { sha256: claimedHash, taskId }).catch(() => undefined);
     }
-    await fetched.release();
+    try {
+      await fetched.release();
+    } catch (error) {
+      const releaseFailure = asStageFailure(error, "IMAGE_PERMIT_RELEASE_FAILED");
+      if (!primaryFailure) throw releaseFailure;
+    }
   }
 }
 
@@ -394,9 +413,12 @@ async function processQueueMessage(message: { body: QueuePayload; attempts: numb
     }
     message.ack();
   } catch (error) {
-    const code = safeErrorCode(error);
-    const retryable = error instanceof ScrapeError && error.retryable;
-    const delay = error instanceof ScrapeError && error.retryAfterSeconds ? error.retryAfterSeconds : 2;
+    // Unexpected runtime exceptions are retried within the normal bounded
+    // task retry budget instead of being failed permanently on their first hit.
+    const taskError = asStageFailure(error, "WORKER_ERROR");
+    const code = safeErrorCode(taskError);
+    const retryable = taskError.retryable;
+    const delay = taskError.retryAfterSeconds || 2;
     const response = await jobRequest(env, hint.jobId, "/task/retry", { taskId: hint.taskId, code, retryable, delaySeconds: delay });
     await checkTaskResponse(response, ["accepted", "completed", "already_terminal"]);
     message.ack();
