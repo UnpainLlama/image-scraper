@@ -160,7 +160,17 @@ function parseElitebabes(document: Document, base: string): DiscoveryResult {
   if (listItems.length) {
     for (const item of listItems) {
       const anchor = item.querySelector("a[href]");
-      addPage(output, anchor?.getAttribute("href") || null, base);
+      const raw = anchor?.getAttribute("href") || "";
+      const url = absolute(raw, base);
+      if (!url) continue;
+      const parsed = new URL(url);
+      const path = parsed.pathname.replace(/\/+$/, "");
+      const parts = path.split("/").filter(Boolean);
+      if (!hostMatches(parsed.hostname, "elitebabes.com") || parts.length !== 1) continue;
+      if (/\/(?:tag|model|category|page|wp-|login|register|random|search|author)\//i.test(path + "/")) continue;
+      if (["photos", "videos", "models", "tags", "feed"].includes(parts[0]!.toLowerCase())) continue;
+      if (parts[0]!.toLowerCase().includes("void(")) continue;
+      addPage(output, url, base);
     }
     for (const anchor of Array.from(document.querySelectorAll('a[href*="/page/"]'))) {
       addPage(output, anchor.getAttribute("href"), base);
@@ -237,6 +247,22 @@ function parseBuondua(document: Document, base: string): DiscoveryResult {
   // remain; do not rely on the page exposing an explicit "next" anchor.
   if (albumCount > 0) addPage(output, nextOffsetPage(base, "start", BUONDUA_LIST_STEP), base);
   return output;
+}
+
+export function normalizeSiteListingUrl(input: string): string {
+  try {
+    const url = new URL(input);
+    const host = url.hostname.toLowerCase();
+    const isBooruListing = hostMatches(host, "rule34.xxx") || hostMatches(host, "realbooru.com");
+    if (isBooruListing && url.pathname === "/" && !url.searchParams.has("s")) {
+      url.pathname = "/index.php";
+      url.searchParams.set("page", "post");
+      url.searchParams.set("s", "list");
+    }
+    return url.toString();
+  } catch {
+    return input;
+  }
 }
 
 export function isSexComUrl(input: string): boolean {
