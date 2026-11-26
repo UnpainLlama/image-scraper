@@ -7,7 +7,7 @@ import { putStreamAndHash, R2StorageAdapter, sniffImageFormat } from "./storage"
 import type { Env, JobMode, JobSettings, JobSnapshot, QueuePayload, StoredTaskPayload } from "./types";
 export { JobDurableObject } from "./job";
 
-const DEFAULT_BUDGET = 8 * 1024 * 1024 * 1024;
+const DEFAULT_BUDGET = 1024 * 1024 * 1024;
 const DEFAULT_MAX_FILE = 50 * 1024 * 1024;
 const MANIFEST_LIMIT = 50_000;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
@@ -402,10 +402,12 @@ async function createJob(request: Request, env: Env): Promise<Response> {
   const jobId = crypto.randomUUID().replace(/-/g, "");
   const settings: JobSettings = {
     allowedOrigin: site.origin, mode: body.mode,
-    concurrency: Math.min(20, Math.max(1, Math.floor(Number(body.concurrency || 5)))),
+    concurrency: Number.isFinite(Number(body.concurrency))
+      ? Math.min(5, Math.max(1, Math.floor(Number(body.concurrency))))
+      : 3,
     maxDepth: body.mode === "crawl" ? Math.min(10, Math.max(0, Math.floor(Number(body.maxDepth ?? 3)))) : 0,
-    maxPages: 500, maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
-    perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 50_000
+    maxPages: 100, maxFileBytes: DEFAULT_MAX_FILE, budgetBytes: DEFAULT_BUDGET,
+    perDomainDelayMs: 1000, maxImagesPerPage: 2000, maxImagesPerJob: 2000
   };
   const init = await jobRequest(env, jobId, "/init", { jobId, ...settings });
   if (!init.ok) throw new ScrapeError("JOB_INITIALIZATION_FAILED");
