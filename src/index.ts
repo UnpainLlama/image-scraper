@@ -144,13 +144,20 @@ async function fetchRenderedHtml(env: Env, jobId: string, pageUrl: string, allow
     await guard.release();
     releaseBrowser = await acquireBrowserPagePermit(env, jobId, guard.finalUrl.toString(), allowedOrigin);
     const patterns = browserRequestPatterns(allowedOrigin);
-    const response = await env.BROWSER.quickAction("content", {
-      url: guard.finalUrl.toString(),
-      ...patterns,
-      gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
-    });
-    if (!response.ok) return null;
-    return await readLimitedText(response, 2_500_000);
+    try {
+      const response = await env.BROWSER.quickAction("content", {
+        url: guard.finalUrl.toString(),
+        ...patterns,
+        gotoOptions: { waitUntil: "networkidle2", timeout: 20_000 }
+      });
+      if (!response.ok) return null;
+      return await readLimitedText(response, 2_500_000);
+    } catch {
+      // Browser Run has a 10-minute/day allowance on Workers Free. If the
+      // optional renderer is unavailable or quota-limited, continue with the
+      // original HTML instead of failing the whole image job.
+      return null;
+    }
   } finally {
     await guard.release();
     if (releaseBrowser) await releaseBrowser();
