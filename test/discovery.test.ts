@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoverFromHtml, discoverFromCss } from "../src/discovery";
+import { discoverFromHtml, discoverFromCss, discoverStaticPage } from "../src/discovery";
 
 describe("image discovery", () => {
   it("finds img, srcset, meta, linked images, CSS backgrounds and same-origin pages", () => {
@@ -39,5 +39,29 @@ describe("image discovery", () => {
       10
     );
     expect(result.images.map(item => item.url)).toEqual(["https://example.com/background.png"]);
+  });
+});
+
+
+describe("static terminal pagination", () => {
+  it("follows only the explicit next page control", () => {
+    const html = [
+      '<img src="/image.jpg">',
+      '<a href="/about">About</a>',
+      '<a rel="next" href="/page/2">Next</a>',
+      '<a href="/page/3" class="next-link">Next page</a>'
+    ].join("");
+    const result = discoverStaticPage(html, "https://example.com/");
+    expect(result.images.map(item => item.url)).toContain("https://example.com/image.jpg");
+    expect(result.pages).toEqual(["https://example.com/page/2"]);
+    expect(result.followPages).toBe(true);
+  });
+
+  it("does not follow cross-origin next links", () => {
+    const result = discoverStaticPage(
+      '<a rel="next" href="https://other.example/page/2">Next</a>',
+      "https://example.com/"
+    );
+    expect(result.pages).toEqual([]);
   });
 });
