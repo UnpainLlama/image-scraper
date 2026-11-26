@@ -1,5 +1,5 @@
 import { ScrapeError } from "./http";
-import type { Env, FetchResult, RobotsPolicy } from "./types";
+import type { Env, FetchResult } from "./types";
 
 const USER_AGENT = "ImageScraperBot/1.0 (+https://github.com/UnpainLlama/image-scraper)";
 
@@ -43,89 +43,6 @@ async function fetchRawSafe(input: URL, headers?: HeadersInit): Promise<{ respon
     return { response, finalUrl: current };
   }
   throw new ScrapeError("TOO_MANY_REDIRECTS");
-}
-
-export async function readRobotsResponse(response: Response, maximumBytes = ROBOTS_MAX_BYTES): Promise<string | null> {
-  if (response.status !== 200 || !response.body) {
-    await response.body?.cancel();
-    return null;
-  }
-  const declared = Number(response.headers.get("content-length") || "0");
-  if (declared > maximumBytes) {
-    await response.body.cancel();
-    throw new ScrapeError("ROBOTS_TOO_LARGE");
-  }
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total > maximumBytes) {
-        await reader.cancel();
-        throw new ScrapeError("ROBOTS_TOO_LARGE");
-      }
-      chunks.push(part.value);
-    }
-  } finally { reader.releaseLock(); }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(bytes);
-}
-
-function wildcardPattern(pattern: string): RegExp {
-  const ending = pattern.endsWith("$");
-  const body = ending ? pattern.slice(0, -1) : pattern;
-  const escaped = body.replace(/[.+?^$()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
-  return new RegExp("^" + escaped + (ending ? "$" : ".*"));
-}
-
-export function parseRobots(text: string): RobotsPolicy {
-  const groups: Array<{ agents: string[]; rules: Array<{ allow: boolean; path: string }>; delay: number }> = [];
-  let current: { agents: string[]; rules: Array<{ allow: boolean; path: string }>; delay: number } | null = null;
-  let hasDirectives = false;
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = (rawLine.split("#", 1)[0] || "").trim();
-    if (!line) continue;
-    const separator = line.indexOf(":");
-    if (separator < 0) continue;
-    const name = line.slice(0, separator).trim().toLowerCase();
-    const value = line.slice(separator + 1).trim();
-    if (name === "user-agent") {
-      if (!current || hasDirectives) {
-        current = { agents: [], rules: [], delay: 0 };
-        groups.push(current);
-        hasDirectives = false;
-      }
-      current.agents.push(value.toLowerCase());
-      continue;
-    }
-    if (!current) continue;
-    hasDirectives = true;
-    if ((name === "allow" || name === "disallow") && value) current.rules.push({ allow: name === "allow", path: value });
-    else if (name === "crawl-delay") {
-      const seconds = Number(value);
-      if (Number.isFinite(seconds) && seconds >= 0) current.delay = Math.max(current.delay, Math.min(30, seconds) * 1000);
-    }
-  }
-  const matching = groups.filter(group => group.agents.some(agent => agent === "*" || USER_AGENT.toLowerCase().includes(agent)));
-  return {
-    rules: matching.flatMap(group => group.rules),
-    crawlDelayMs: matching.reduce((maximum, group) => Math.max(maximum, group.delay), 0)
-  };
-}
-
-export function isRobotsAllowed(pathAndQuery: string, policy: RobotsPolicy): boolean {
-  let winning: { allow: boolean; length: number } | null = null;
-  for (const rule of policy.rules) {
-    if (!wildcardPattern(rule.path).test(pathAndQuery)) continue;
-    const specificity = rule.path.replace(/[*$]/g, "").length;
-    if (!winning || specificity > winning.length || (specificity === winning.length && rule.allow)) winning = { allow: rule.allow, length: specificity };
-  }
-  return winning ? winning.allow : true;
 }
 
 function escapeBrowserPattern(value: string): string {
