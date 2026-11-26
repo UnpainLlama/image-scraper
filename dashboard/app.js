@@ -16,6 +16,9 @@
     line.className = "terminal-line" + (kind ? " " + kind : "");
     line.textContent = String(message);
     $("terminal-output").appendChild(line);
+    while ($("terminal-output").childNodes.length > 2500) {
+      $("terminal-output").removeChild($("terminal-output").firstChild);
+    }
     $("terminal-output").scrollTop = $("terminal-output").scrollHeight;
   }
 
