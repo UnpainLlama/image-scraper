@@ -26,11 +26,11 @@ function isHost(hostname: string, domain: string): boolean {
 
 function looksLikeUrl(value: string): boolean {
   return /^https?:\/\//i.test(value) ||
-    /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/|$)/i.test(value);
+    /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#]|$)/i.test(value);
 }
 
 function parseInputUrl(value: string): URL {
-  try { return new URL(/^https?:\/\//i.test(value) ? value : "https://" + value); }
+  try { const url = new URL(/^https?:\/\//i.test(value) ? value : "https://" + value); url.protocol = "https:"; return url; }
   catch { throw new ScrapeError("INVALID_URL"); }
 }
 
