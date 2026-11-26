@@ -12,6 +12,7 @@ export interface JobSettings {
   maxImagesPerPage?: number;
   maxImagesPerJob?: number;
   eliteBabesMode?: "images" | "galleries";
+  followNextPage?: boolean;
 }
 export interface QueuePayload { jobId: string; taskId: string; }
 export interface StoredTaskPayload { url: string; depth?: number; }
