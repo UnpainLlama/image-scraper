@@ -22,7 +22,8 @@
       pages: $("pages").value,
       mode: $("mode").value,
       concurrency: Number($("concurrency").value),
-      maxDepth: Number($("depth").value)
+      maxDepth: Number($("depth").value),
+      eliteBabesMode: $("elitebabes-mode").value
     };
   }
 
@@ -34,7 +35,16 @@
     $("concurrency").value = String(Math.min(5, Math.max(1, Number(config.concurrency) || 3)));
     $("concurrency-value").textContent = $("concurrency").value;
     $("depth").value = String(Math.min(10, Math.max(0, Number(config.maxDepth) || 0)));
+    $("elitebabes-mode").value = config.eliteBabesMode === "images" ? "images" : "galleries";
     $("depth-field").hidden = $("mode").value !== "crawl";
+    updateSourceOptions();
+  }
+
+  function updateSourceOptions() {
+    const raw = $("site-url").value.trim();
+    let isEliteBabes = false;
+    try { isEliteBabes = /(^|\.)elitebabes\.com$/i.test(new URL(raw).hostname); } catch {}
+    $("elitebabes-mode-field").hidden = !isEliteBabes;
   }
 
   function rememberRecoveryJob(jobId) {
@@ -272,6 +282,13 @@
     }
   }
 
+  $("site-url").addEventListener("input", updateSourceOptions);
+  $("elitebabes-mode").addEventListener("change", () => {
+    const previous = readLastConfig() || {};
+    previous.eliteBabesMode = $("elitebabes-mode").value;
+    try { localStorage.setItem("image-scraper-last-config", JSON.stringify({ ...previous, ...currentFormConfig() })); } catch {}
+  });
+
   $("concurrency").addEventListener("input", () => {
     $("concurrency-value").textContent = $("concurrency").value;
   });
@@ -295,7 +312,8 @@
           pages,
           mode: config.mode,
           concurrency: config.concurrency,
-          maxDepth: config.maxDepth
+          maxDepth: config.maxDepth,
+          eliteBabesMode: config.eliteBabesMode
         })
       });
       if (activeJobId && activeJobId !== result.jobId && !recoveryJobId) rememberRecoveryJob(activeJobId);
