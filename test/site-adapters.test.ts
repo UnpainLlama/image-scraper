@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl } from "../src/site-adapters";
+import { discoverSexComApiPage, discoverSiteSpecificHtml, isSexComUrl, normalizeSiteListingUrl } from "../src/site-adapters";
 
 describe("image-only source adapters", () => {
   it("resolves Rule34 sample image URLs and strips cache query strings", () => {
@@ -130,4 +130,22 @@ describe("image-only source adapters", () => {
     expect(realbooru?.images.map(item => item.url)).toEqual(["https://cdn.realbooru.com/file.webp"]);
     expect(rule34?.images.map(item => item.url)).toEqual(["https://cdn.rule34.xxx/file.webp"]);
   });
+
+  it("normalizes bare Rule34 and Realbooru hosts to their listing endpoints", () => {
+    const rule34 = new URL(normalizeSiteListingUrl("https://rule34.xxx/?tags=fox_girl"));
+    expect(rule34.pathname).toBe("/index.php");
+    expect(rule34.searchParams.get("page")).toBe("post");
+    expect(rule34.searchParams.get("s")).toBe("list");
+    expect(rule34.searchParams.get("tags")).toBe("fox_girl");
+
+    const realbooru = new URL(normalizeSiteListingUrl("https://realbooru.com/"));
+    expect(realbooru.pathname).toBe("/index.php");
+    expect(realbooru.searchParams.get("s")).toBe("list");
+  });
+
+  it("does not rewrite an explicitly supplied booru post URL", () => {
+    const post = "https://rule34.xxx/index.php?page=post&s=view&id=123";
+    expect(normalizeSiteListingUrl(post)).toBe(post);
+  });
+
 });
