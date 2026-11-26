@@ -163,7 +163,7 @@ export async function putStreamAndHash(
   let unreservedBytes = 0;
   let partChunks: Uint8Array[] = [];
   let partBytes = 0;
-  let multipart: R2MultipartUpload | null = null;
+  const multipartState: { upload: R2MultipartUpload | null } = { upload: null };
   const uploadedParts: R2UploadedPart[] = [];
 
   const reservePending = async (flush = false): Promise<void> => {
@@ -179,10 +179,11 @@ export async function putStreamAndHash(
     if (!partBytes) return;
     await reservePending(true);
     const body = concatenateChunks(partChunks, partBytes);
-    if (!multipart) multipart = await bucket.createMultipartUpload(temporaryKey, {
+    if (!multipartState.upload) multipartState.upload = await bucket.createMultipartUpload(temporaryKey, {
       httpMetadata: putOptions.httpMetadata
     });
-    const uploaded = await multipart.uploadPart(uploadedParts.length + 1, body);
+    const upload = multipartState.upload;
+    const uploaded = await upload.uploadPart(uploadedParts.length + 1, body);
     uploadedParts.push(uploaded);
     partChunks = [];
     partBytes = 0;
@@ -208,15 +209,17 @@ export async function putStreamAndHash(
     }
 
     await reservePending(true);
-    if (multipart) {
+    const upload = multipartState.upload;
+    if (upload) {
       if (partBytes > 0) await uploadPart();
-      await multipart.complete(uploadedParts);
-      multipart = null;
+      await upload.complete(uploadedParts);
+      multipartState.upload = null;
     } else if (size > 0) {
       await bucket.put(temporaryKey, concatenateChunks(partChunks, partBytes), putOptions);
     }
   } catch (error) {
-    if (multipart) await multipart.abort().catch(() => undefined);
+    const upload = multipartState.upload;
+    if (upload) await upload.abort().catch(() => undefined);
     throw error;
   } finally {
     reader.releaseLock();

@@ -64,7 +64,7 @@ describe("R2 stream uploads", () => {
         stored.set(key, bytes);
         return { key, size: bytes.byteLength } as R2Object;
       }),
-      createMultipartUpload: vi.fn(async (key: string) => {
+      createMultipartUpload: vi.fn(async (key: string, options?: R2MultipartOptions) => {
         const parts: Uint8Array[] = [];
         return {
           key,
